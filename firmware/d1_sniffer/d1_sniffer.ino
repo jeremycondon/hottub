@@ -2,8 +2,8 @@
  * D1 Sniffer — Balboa BP501 RS485 bus monitor
  *
  * Waveshare ESP32-S3-RS485-CAN pin mapping:
- *   RS485 TX       GPIO17  (UART1)
- *   RS485 RX       GPIO18  (UART1)
+ *   RS485 TX        GPIO17  (UART1)
+ *   RS485 RX        GPIO18  (UART1)
  *   RS485 TX-Enable GPIO21
  *
  * Connect:
@@ -11,28 +11,55 @@
  *   Balboa B- → board B- terminal
  *   Balboa GND → board GND  (recommended)
  *
- * Open Serial Monitor at 115200 baud.
- * This sketch is READ-ONLY — it never transmits on the RS485 bus.
+ * First boot: connect to "HotTub-Sniffer" AP and enter WiFi credentials.
+ * Subsequent boots connect automatically.
+ *
+ * OTA:     make flash-ota         (or: make flash-ota OTA_HOST=<ip>)
+ * Logs:    telnet hottub-sniffer.local
+ *          (USB Serial also works as usual)
+ *
+ * This sketch is READ-ONLY on the RS485 bus — it never transmits.
  */
 
 #include <HardwareSerial.h>
+#include <WiFiManager.h>
+#include <ArduinoOTA.h>
+#include <TelnetStream.h>
+
+#include "secrets.h"   // OTA_PASSWORD — gitignored; copy from secrets.h.example
+
+// ── Config ────────────────────────────────────────────────────────────────────
+
+static constexpr const char* OTA_HOSTNAME = "hottub-sniffer";
 
 // Waveshare ESP32-S3-RS485-CAN RS485 pins
 static constexpr int RS485_TX   = 17;
 static constexpr int RS485_RX   = 18;
 static constexpr int RS485_DE   = 21;   // Driver Enable: HIGH=transmit, LOW=receive
-
-// We're sniffer-only — keep DE low the whole time
 static constexpr int RS485_BAUD = 115200;
 
 // Balboa frame constants
 static constexpr uint8_t MSG_START = 0xFF;
 static constexpr uint8_t MSG_END   = 0x7E;
+static constexpr size_t  MAX_FRAME = 64;
 
-// Maximum realistic Balboa frame length
-static constexpr size_t MAX_FRAME = 64;
+// ── Log helper ────────────────────────────────────────────────────────────────
+// Forwards all output to both USB Serial and the Telnet session (if connected).
 
-// ── CRC ──────────────────────────────────────────────────────────────────────
+struct DualPrint : public Print {
+    size_t write(uint8_t c) override {
+        Serial.write(c);
+        TelnetStream.write(c);
+        return 1;
+    }
+    size_t write(const uint8_t *buf, size_t size) override {
+        Serial.write(buf, size);
+        TelnetStream.write(buf, size);
+        return size;
+    }
+} Log;
+
+// ── CRC ───────────────────────────────────────────────────────────────────────
 
 static uint8_t crc8(const uint8_t *data, size_t len) {
     uint8_t crc = 0x02;
@@ -64,9 +91,9 @@ static const char* pumpStateStr(uint8_t v) {
 
 static void printHex(const uint8_t *buf, size_t len) {
     for (size_t i = 0; i < len; i++) {
-        if (buf[i] < 0x10) Serial.print('0');
-        Serial.print(buf[i], HEX);
-        Serial.print(' ');
+        if (buf[i] < 0x10) Log.print('0');
+        Log.print(buf[i], HEX);
+        Log.print(' ');
     }
 }
 
@@ -88,7 +115,7 @@ static void printHex(const uint8_t *buf, size_t len) {
 
 static void decodeStatusMessage(const uint8_t *payload, size_t payloadLen) {
     if (payloadLen < 9) {
-        Serial.println("  [status] payload too short");
+        Log.println("  [status] payload too short");
         return;
     }
 
@@ -109,24 +136,24 @@ static void decodeStatusMessage(const uint8_t *payload, size_t payloadLen) {
     bool    light = (miscFlags >> 0) & 0x01;
     bool    circ  = (miscFlags >> 1) & 0x01;
 
-    Serial.printf("  [status] %02d:%02d", hour, minute);
+    Log.printf("  [status] %02d:%02d", hour, minute);
     if (curTempRaw == 0xFF) {
-        Serial.print("  temp=INIT");
+        Log.print("  temp=INIT");
     } else {
         float curTemp = tempIsCelsius ? curTempRaw / 2.0f : curTempRaw;
         float setTemp = tempIsCelsius ? setTempRaw / 2.0f : setTempRaw;
-        Serial.printf("  cur=%.1f%s  set=%.1f%s",
+        Log.printf("  cur=%.1f%s  set=%.1f%s",
             curTemp, tempIsCelsius ? "C" : "F",
             setTemp, tempIsCelsius ? "C" : "F");
     }
-    Serial.printf("  heating=%s  range=%s",
+    Log.printf("  heating=%s  range=%s",
         isHeating ? "YES" : "no",
         isHighRange ? "high" : "low");
-    Serial.printf("  pump1=%s  pump2=%s  light=%s  circ=%s",
+    Log.printf("  pump1=%s  pump2=%s  light=%s  circ=%s",
         pumpStateStr(pump1), pumpStateStr(pump2),
         light ? "on" : "off",
         circ  ? "on" : "off");
-    Serial.println();
+    Log.println();
 }
 
 // ── Frame processor ───────────────────────────────────────────────────────────
@@ -136,9 +163,8 @@ static void processFrame(const uint8_t *frame, size_t len) {
     if (len < 6) return;
 
     // frame[0]=0xFF  frame[1]=msgLen  frame[len-2]=crc  frame[len-1]=0x7E
-    uint8_t msgLen   = frame[1];
-    uint8_t rxCrc    = frame[len - 2];
-    uint8_t calcCrc  = crc8(frame + 1, len - 3);   // over len byte through last payload byte
+    uint8_t rxCrc   = frame[len - 2];
+    uint8_t calcCrc = crc8(frame + 1, len - 3);   // over len byte through last payload byte
 
     bool crcOk = (rxCrc == calcCrc);
 
@@ -146,24 +172,24 @@ static void processFrame(const uint8_t *frame, size_t len) {
     uint8_t typeLo = frame[3];
 
     // Raw hex
-    Serial.print("FRAME [");
-    Serial.print(len);
-    Serial.print("] ");
+    Log.print("FRAME [");
+    Log.print(len);
+    Log.print("] ");
     printHex(frame, len);
-    Serial.printf(" CRC:%s\n", crcOk ? "OK" : "FAIL");
+    Log.printf(" CRC:%s\n", crcOk ? "OK" : "FAIL");
 
     if (!crcOk) return;
 
     // Payload starts after start(1) + len(1) + type(2)
-    const uint8_t *payload = frame + 4;
-    size_t payloadLen = (len >= 6) ? len - 6 : 0;   // exclude start,len,type(2),crc,end
+    const uint8_t *payload    = frame + 4;
+    size_t         payloadLen = (len >= 6) ? len - 6 : 0;   // exclude start,len,type(2),crc,end
 
     if (typeHi == 0xFF && typeLo == 0xAF) {
         decodeStatusMessage(payload, payloadLen);
     } else {
-        Serial.printf("  [type 0x%02X 0x%02X] payload(%zu): ", typeHi, typeLo, payloadLen);
+        Log.printf("  [type 0x%02X 0x%02X] payload(%zu): ", typeHi, typeLo, payloadLen);
         printHex(payload, payloadLen);
-        Serial.println();
+        Log.println();
     }
 }
 
@@ -173,28 +199,46 @@ void setup() {
     Serial.begin(115200);
     delay(500);
     Serial.println("\n=== Balboa BP501 RS485 Sniffer (D1) ===");
-    Serial.println("Board:  Waveshare ESP32-S3-RS485-CAN");
-    Serial.printf("RS485:  TX=GPIO%d  RX=GPIO%d  DE=GPIO%d  %d baud\n",
+    Serial.println("Connecting to WiFi...");
+
+    WiFi.setHostname(OTA_HOSTNAME);
+    WiFiManager wm;
+    wm.autoConnect("HotTub-Sniffer");   // blocks until connected (captive portal on first boot)
+
+    TelnetStream.begin();
+
+    ArduinoOTA.setHostname(OTA_HOSTNAME);
+    ArduinoOTA.setPassword(OTA_PASSWORD);
+    ArduinoOTA.onStart([]()  { Log.println("[OTA] Starting..."); });
+    ArduinoOTA.onEnd([]()    { Log.println("[OTA] Done — rebooting."); });
+    ArduinoOTA.onError([](ota_error_t e) { Log.printf("[OTA] Error %u\n", e); });
+    ArduinoOTA.begin();
+
+    Log.println("\n=== Balboa BP501 RS485 Sniffer (D1) ===");
+    Log.println("Board:  Waveshare ESP32-S3-RS485-CAN");
+    Log.printf("WiFi:   %s  (%s)\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+    Log.printf("OTA:    %s.local  (password set)\n", OTA_HOSTNAME);
+    Log.printf("RS485:  TX=GPIO%d  RX=GPIO%d  DE=GPIO%d  %d baud\n",
         RS485_TX, RS485_RX, RS485_DE, RS485_BAUD);
-    Serial.println("Mode:   RECEIVE-ONLY (never transmits)");
-    Serial.println("========================================\n");
+    Log.println("Mode:   RECEIVE-ONLY (never transmits)");
+    Log.println("========================================\n");
 
     // Hold DE low — receive-only for the entire session
     pinMode(RS485_DE, OUTPUT);
     digitalWrite(RS485_DE, LOW);
 
-    // Start UART1 on the RS485 pins
     Serial1.begin(RS485_BAUD, SERIAL_8N1, RS485_RX, RS485_TX);
 
-    Serial.println("Listening...\n");
+    Log.println("Listening...\n");
 }
 
 void loop() {
+    ArduinoOTA.handle();
+
     while (Serial1.available()) {
         uint8_t b = Serial1.read();
 
         if (b == MSG_START && !inFrame) {
-            // Start of a new frame
             frameLen = 0;
             inFrame  = true;
         }
@@ -203,14 +247,12 @@ void loop() {
             if (frameLen < MAX_FRAME) {
                 frameBuf[frameLen++] = b;
             } else {
-                // Overflow — discard and reset
-                Serial.println("[sniffer] frame overflow, resetting");
+                Log.println("[sniffer] frame overflow, resetting");
                 inFrame  = false;
                 frameLen = 0;
             }
 
             if (b == MSG_END && frameLen > 2) {
-                // End of frame
                 processFrame(frameBuf, frameLen);
                 inFrame  = false;
                 frameLen = 0;

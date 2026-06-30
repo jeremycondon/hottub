@@ -37,7 +37,9 @@ PORT ?= $(shell ls /dev/cu.usbmodem* /dev/cu.SLAB_USBtoUART* 2>/dev/null | head 
 # OTA target — override with: make OTA_HOST=192.168.1.x flash-ota
 OTA_HOST ?= hottub-sniffer.local
 OTA_PORT ?= 3232
-OTA_PASS ?= hottub
+# OTA password is read from the gitignored secrets.h (single source of truth,
+# shared with the firmware). Override with: make OTA_PASS=... flash-ota
+OTA_PASS ?= $(shell sed -n 's/.*OTA_PASSWORD[[:space:]]*"\(.*\)".*/\1/p' secrets.h 2>/dev/null)
 
 # espota.py is bundled with the ESP32 Arduino core
 ESPOTA := $(shell find ~/.arduino15/packages/esp32 -name espota.py 2>/dev/null | head -1)

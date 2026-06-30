@@ -38,15 +38,35 @@ Type: `0xFF 0xAF`
 
 Contains: current temp, set temp, pump 1/2/3 state, light state, heating state, temp scale (F/C), filter cycle, time of day, restriction mode.
 
-### Set Temp
+**Payload byte map** (bytes after the 2-byte type field, 0-indexed):
 
-Type: `0x0A 0xBF 0x20`  
-Payload: 1 byte — desired temp in units matching current scale (°F or °C × 2)
+| Byte | Field | Notes |
+|---|---|---|
+| 0 | hour | 0–23 |
+| 1 | minute | 0–59 |
+| 2 | flags | bit 0 = Celsius, bit 2 = high range, bit 4 = heating |
+| 3 | currentTemp | °F raw, or °C × 2; `0xFF` = sensor not initialized |
+| 4 | flags2 | |
+| 5 | setTemp | same encoding as currentTemp |
+| 6 | pumpFlags | bits[1:0] = pump1 (0=off,1=low,2=high), bits[3:2] = pump2 |
+| 7 | miscFlags | bit 0 = light, bit 1 = circ pump |
+| 8+ | additional flags | vary by firmware revision |
 
-### Toggle Request (pump, light, etc.)
+Exact offsets can vary slightly across BP5xx firmware versions — validate against observed frames.
 
-Type: `0x0A 0xBF 0x11`  
-Payload: 1 byte — item code
+### Commands (peripheral → spa)
+
+Commands from peripherals use a common 2-byte type prefix `0x0A 0xBF`. The first byte of the payload is the command discriminator.
+
+#### Set Temp
+
+Type: `0x0A 0xBF`, command byte: `0x20`  
+Payload (after command byte): 1 byte — desired temp in units matching current scale (°F raw, or °C × 2)
+
+#### Toggle Request (pump, light, etc.)
+
+Type: `0x0A 0xBF`, command byte: `0x11`  
+Payload (after command byte): 1 byte — item code
 
 | Code | Item |
 |---|---|

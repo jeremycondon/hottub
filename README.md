@@ -56,5 +56,32 @@ docs/
 
 ## Getting Started
 
+### Prerequisites
+
+1. Install `arduino-cli`:
+   ```sh
+   brew install arduino-cli
+   ```
+
+2. Install the ESP32 board package (one-time, downloads ~600 MB):
+   ```sh
+   arduino-cli core update-index
+   arduino-cli core install esp32:esp32
+   ```
+   Or use the convenience target in any sketch directory:
+   ```sh
+   make setup
+   ```
+
+### Flashing a sketch
+
+```sh
+cd firmware/d1_sniffer
+make flash          # compile + upload
+make flash-monitor  # compile, upload, then open serial monitor
+```
+
+Port is auto-detected. Override if needed: `make PORT=/dev/cu.usbserial-XXXX flash`
+
 See [docs/PLAN.md](docs/PLAN.md) for the full implementation plan.
 See [docs/hardware.md](docs/hardware.md) for wiring instructions.
