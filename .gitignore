@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# arduino-cli build output
+build/
+*.bin
+*.elf
+*.hex
+*.map
+
+# Local secrets (copy from *.example) — never commit real credentials
+secrets.h
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
