@@ -77,8 +77,9 @@ docs/
 
 ```sh
 cd firmware/d1_sniffer
-make flash          # compile + upload
-make flash-monitor  # compile, upload, then open serial monitor
+cp secrets.h.example secrets.h   # one-time: set your OTA password
+make flash                       # compile + upload
+make flash-monitor               # compile, upload, then open serial monitor
 ```
 
 Port is auto-detected. Override if needed: `make PORT=/dev/cu.usbserial-XXXX flash`
