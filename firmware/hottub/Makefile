@@ -1,5 +1,10 @@
 # Main Firmware — Waveshare ESP32-S3-RS485-CAN
 #
+# NOTE: This sketch has no hottub.ino yet. When you start the firmware, add a
+# sketch.yaml here to pin the platform + library versions (HomeSpan, WiFiManager,
+# etc.) for reproducible OTA builds — copy the pattern from
+# ../d1_sniffer/sketch.yaml and switch the targets here to `--profile`.
+#
 # Requires arduino-cli: brew install arduino-cli
 #   make setup      # first time: installs board package + libraries
 #

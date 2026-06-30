@@ -1,0 +1,22 @@
+# Arduino sketch profile — pins the exact toolchain + libraries for reproducible
+# builds (important: this device lives inside the hot tub enclosure and is
+# flashed over OTA, so a clean checkout must build bit-identically).
+#
+# Build with the pinned profile:
+#   arduino-cli compile --profile d1_sniffer .
+# A profile build auto-installs the exact platform + library versions below
+# into a sketch-local location, independent of whatever is in the global
+# Arduino libraries dir.
+profiles:
+  d1_sniffer:
+    notes: Waveshare ESP32-S3-RS485-CAN, 8MB flash, USB-CDC, dual-OTA partitions
+    fqbn: esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashMode=qio,FlashSize=8M,PartitionScheme=default_8MB
+    platforms:
+      - platform: esp32:esp32 (3.3.10)
+        platform_index_url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+    libraries:
+      - WiFiManager (2.0.17)
+      - TelnetStream (1.3.0)
+      - NetApiHelpers (1.0.2)   # transitive dep of TelnetStream
+
+default_profile: d1_sniffer
