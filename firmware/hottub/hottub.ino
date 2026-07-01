@@ -71,7 +71,7 @@ static void handleCommand(const char* cmd) {
     else if (!strncmp(cmd, "temp ", 5)) {
         if (!bus.proto.armed()) { Log.println("[err] arm first"); return; }
         int t = atoi(cmd + 5);
-        if (t <= 0) { Log.println("[err] usage: temp <degF>"); return; }
+        if (t < 40 || t > 104) { Log.println("[err] temp out of range 40-104F"); return; }
         bus.proto.cmdSetTemp((uint8_t)t);
         armedAt = millis();
         Log.println("[queued] set temp");

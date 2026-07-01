@@ -38,12 +38,13 @@ void SpaProtocol::onFrame(const uint8_t* f, size_t len, uint32_t nowMs) {
     size_t plen = (len >= 7) ? len - 7 : 0;
     if (ch == 0xFF && t0 == 0xAF && t1 == 0x13) {   // status broadcast
         parseStatus(payload, plen, state_, nowMs);
+        owe_ = OweNone;                              // never reply to a broadcast
         return;
     }
     if (!armed_) { owe_ = OweNone; return; }
     if (t0 != 0xBF) { owe_ = OweNone; return; }      // only BF arbitration frames
-    if (reg_ == Unregistered && ch == 0xFE && t1 == 0x00) {
-        reg_ = Requesting; owe_ = OweRequest; return;
+    if ((reg_ == Unregistered || reg_ == Requesting) && ch == 0xFE && t1 == 0x00) {
+        reg_ = Requesting; owe_ = OweRequest; return;   // (re)request until assigned
     }
     if (reg_ == Requesting && ch == 0xFE && t1 == 0x02 && plen >= 1) {
         channel_ = payload[0] > 0x2F ? 0x2F : payload[0];

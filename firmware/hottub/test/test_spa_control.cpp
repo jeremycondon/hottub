@@ -134,6 +134,33 @@ int main() {
     assert(dqP.pollTx(tiny, sizeof tiny) == 0);   // 8-byte cmd can't fit in cap=3
     assert(dqP.hasPendingCommand());              // command NOT dequeued on encode failure
 
+    // --- Lost request self-heals: re-request on repeated FE BF 00 while Requesting (Fix 2) ---
+    SpaProtocol rrP;
+    rrP.setArmed(true);
+    const uint8_t rrNc[] = {0xFE,0xBF,0x00};
+    m = frame(buf, rrNc, sizeof rrNc);
+    rrP.onFrame(buf, m, 400);
+    assert(rrP.pollTx(tx, sizeof tx) > 0);              // first request emitted
+    assert(rrP.regState() == SpaProtocol::Requesting);
+    rrP.onFrame(buf, m, 410);                           // request assumed lost; polled again
+    size_t rr = rrP.pollTx(tx, sizeof tx);
+    const uint8_t wantReq2[] = {0xFE,0xBF,0x01,0x02,0xF1,0x73};
+    uint8_t reqF2[32]; size_t reqL2 = balboa_build_frame(reqF2, sizeof reqF2, wantReq2, sizeof wantReq2);
+    assert(rr == reqL2 && memcmp(tx, reqF2, rr) == 0);  // request re-sent
+    assert(rrP.regState() == SpaProtocol::Requesting);
+
+    // --- A status broadcast clears any pending owe (Fix 3) ---
+    SpaProtocol stP;
+    stP.setArmed(true);
+    m = frame(buf, rrNc, sizeof rrNc);
+    stP.onFrame(buf, m, 500);                           // owe=OweRequest pending, not polled
+    const uint8_t stStatus[] = {0xFF,0xAF,0x13,
+        0x00,0x03,0x5F,0x0C,0x29,0x00,0x28,0x55,0x00,0x00,0x04,0x00,0x00,0x00,
+        0x00,0x00,0x00,0x00,0x02,0x02,0x55,0x00,0x00,0x02,0x3C,0x00,0x00};
+    m = frame(buf, stStatus, sizeof stStatus);
+    stP.onFrame(buf, m, 510);                           // must clear the pending owe
+    assert(stP.pollTx(tx, sizeof tx) == 0);
+
     printf("ALL TESTS PASSED\n");
     return 0;
 }
