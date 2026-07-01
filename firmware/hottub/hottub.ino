@@ -31,6 +31,19 @@ static SpaState lastPrinted;
 static char     line[32];
 static size_t   lineLen = 0;
 
+static void rawFrameDump(const uint8_t* f, size_t n) {
+    if (!rawDump) return;
+    Log.print("RAW[");
+    Log.print((unsigned)n);
+    Log.print("]");
+    for (size_t i = 0; i < n; i++) {
+        Log.print(' ');
+        if (f[i] < 0x10) Log.print('0');
+        Log.print(f[i], HEX);
+    }
+    Log.println();
+}
+
 static void printState() {
     const SpaState& s = bus.proto.state();
     Log.printf("[spa] cur=%s set=%uF pump1=%u pump2=%s light=%s circ=%s heat=%s range=%s  reg=%d ch=0x%02X armed=%d\n",
@@ -84,6 +97,7 @@ void setup() {
     ArduinoOTA.setPassword(OTA_PASSWORD);
     ArduinoOTA.begin();
     bus.begin(RS485_RX, RS485_TX, RS485_DE, RS485_BAUD);
+    bus.onRawFrame = rawFrameDump;
     Log.printf("\n=== HotTub controller (D2) ===\nWiFi %s (%s)\nRead-only until `arm`.\n",
         WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
 }
