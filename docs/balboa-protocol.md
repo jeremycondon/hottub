@@ -79,17 +79,32 @@ Raw reference frames (BP501, `7E 20 FF AF 13 … CRC 7E`):
 
 ### Commands (peripheral → spa)
 
-Commands from peripherals use a common 2-byte type prefix `0x0A 0xBF`. The first byte of the payload is the command discriminator.
+Commands are sent on the **client's dynamically-assigned channel** `<id>`, obtained via a handshake exchange at startup:
+
+1. **Handshake:**
+   - Client sends poll: `FE BF 00`
+   - Spa responds with request: `FE BF 01 02 F1 73`
+   - Spa assigns channel: `FE BF 02 <id>` (id = first payload byte, capped at `0x2F`)
+   - Client acknowledges: `<id> BF 03`
+2. **Polling & commands:**
+   - Spa polls client: `<id> BF 06`
+   - Client replies with command frame, or `<id> BF 07` if nothing to send
+
+Once registered, all commands use type bytes `<id> BF` followed by a command discriminator and payload.
 
 #### Set Temp
 
-Type: `0x0A 0xBF`, command byte: `0x20`  
-Payload (after command byte): 1 byte — desired temp in units matching current scale (°F raw, or °C × 2)
+Type: `<id> BF`, command byte: `0x20`  
+Payload: 1 byte — desired temp in units matching current scale (°F raw, or °C × 2)
+
+Frame: `FF 03 <id> BF 20 <tempF> CRC 7E`
 
 #### Toggle Request (pump, light, etc.)
 
-Type: `0x0A 0xBF`, command byte: `0x11`  
-Payload (after command byte): 1 byte — item code
+Type: `<id> BF`, command byte: `0x11`  
+Payload: 1 byte item code, followed by padding byte `0x00`
+
+Frame: `FF 04 <id> BF 11 <item> 00 CRC 7E`
 
 | Code | Item |
 |---|---|
