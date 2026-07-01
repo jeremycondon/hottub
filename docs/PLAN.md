@@ -12,7 +12,7 @@
 |---|---|---|
 | Firmware | Arduino + ESP32 Arduino Core 3.x | Best ecosystem for HomeSpan |
 | HomeKit | HomeSpan | Mature, direct pairing (no hub), great OTA story, ESP32-S3 tested |
-| Balboa protocol | MHotchin/BalBoaSpa (adapted) | Arduino library, handles CTS/collision avoidance, tested on ESP32 |
+| Balboa protocol | Custom library (balboa_frame.h) | Tested bidirectional read/write; verified against BP501 reference implementation |
 | WiFi provisioning | WiFiManager | Captive portal on first boot, credentials in NVS |
 | OTA | ArduinoOTA | Built into ESP32 Arduino core, works alongside HomeSpan |
 | iOS | SwiftUI + HomeKit + local REST/WebSocket | HomeKit for basic controls, custom API for spa-specific features |
@@ -42,14 +42,16 @@ Success criteria: Decoded status messages streaming continuously with correct te
 **Goal:** Reliable bidirectional communication — read all spa state, send all control commands.
 
 Tasks:
-- Integrate MHotchin/BalBoaSpa into `firmware/hottub/`
-- Configure for Waveshare pin mapping (TX=17, RX=18, DE=21)
+- Implement Balboa protocol library (`balboa_frame.h`) for Waveshare pin mapping (TX=17, RX=18, DE=21)
+- Handle bus registration handshake, dynamic channel assignment, and polling
 - Implement a `SpaState` struct with all relevant fields
 - Wire up status update callbacks
 - Implement and test each control command: set temp, pump 1 (2-speed), pump 2, lights, blower
 - Handle edge cases: temp sensor uninitialized (0xFF), CRC errors, bus timeout
 
 Success criteria: Can read current state and issue every control command, verified on actual hardware.
+
+**Implementation note:** D2 uses a custom Balboa protocol library (`firmware/hottub/balboa_frame.h`), not MHotchin/BalBoaSpa. Verification is performed via a Telnet command shell (`firmware/hottub/hottub.ino`) available at runtime behind an `arm` gate, allowing inspection and manual command testing on actual hardware.
 
 ---
 
