@@ -11,6 +11,7 @@
 
 #include "secrets.h"
 #include "balboa_frame.h"
+#include "balboa_bus.h"
 
 static constexpr const char* OTA_HOSTNAME = "hottub";
 static constexpr int RS485_TX = 17, RS485_RX = 18, RS485_DE = 21;
@@ -22,6 +23,7 @@ struct DualPrint : public Print {
 } Log;
 
 static BalboaFrameReader reader;
+static BalboaBus bus;
 
 void setup() {
     Serial.begin(115200);
