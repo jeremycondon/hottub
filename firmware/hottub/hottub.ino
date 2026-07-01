@@ -46,8 +46,11 @@ static void rawFrameDump(const uint8_t* f, size_t n) {
 
 static void printState() {
     const SpaState& s = bus.proto.state();
+    char cur[8];
+    if (s.tempKnown) snprintf(cur, sizeof cur, "%u", s.currentTempF);
+    else             snprintf(cur, sizeof cur, "--");
     Log.printf("[spa] cur=%s set=%uF pump1=%u pump2=%s light=%s circ=%s heat=%s range=%s  reg=%d ch=0x%02X armed=%d\n",
-        s.tempKnown ? String(s.currentTempF).c_str() : "--",
+        cur,
         s.setTempF, s.pump1, s.pump2?"on":"off", s.light?"on":"off",
         s.circ?"on":"off", s.heating?"on":"off", s.highRange?"high":"low",
         (int)bus.proto.regState(), bus.proto.channel(), bus.proto.armed());
@@ -67,7 +70,11 @@ static void handleCommand(const char* cmd) {
     else if (!strcmp(cmd, "raw"))    { rawDump = !rawDump; Log.printf("[raw] %s\n", rawDump?"on":"off"); }
     else if (!strncmp(cmd, "temp ", 5)) {
         if (!bus.proto.armed()) { Log.println("[err] arm first"); return; }
-        bus.proto.cmdSetTemp((uint8_t)atoi(cmd + 5)); armedAt = millis(); Log.println("[queued] set temp");
+        int t = atoi(cmd + 5);
+        if (t <= 0) { Log.println("[err] usage: temp <degF>"); return; }
+        bus.proto.cmdSetTemp((uint8_t)t);
+        armedAt = millis();
+        Log.println("[queued] set temp");
     }
     else if (!strcmp(cmd, "pump1")) { if (bus.proto.armed()){ bus.proto.cmdTogglePump1(); armedAt=millis(); Log.println("[queued] pump1"); } else Log.println("[err] arm first"); }
     else if (!strcmp(cmd, "pump2")) { if (bus.proto.armed()){ bus.proto.cmdTogglePump2(); armedAt=millis(); Log.println("[queued] pump2"); } else Log.println("[err] arm first"); }
