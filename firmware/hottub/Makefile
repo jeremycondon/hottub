@@ -57,6 +57,7 @@ test:
 	g++ -std=c++17 -Wall -o /tmp/ht_frame test/test_balboa_frame.cpp && /tmp/ht_frame
 	g++ -std=c++17 -Wall -o /tmp/ht_bf test/test_build_frame.cpp && /tmp/ht_bf
 	g++ -std=c++17 -Wall -o /tmp/ht_st test/test_spa_state.cpp && /tmp/ht_st
+	g++ -std=c++17 -Wall -o /tmp/ht_pc test/test_spa_control.cpp spa_control.cpp && /tmp/ht_pc
 
 clean:
 	rm -rf build/
