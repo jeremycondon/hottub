@@ -17,3 +17,4 @@ secrets.h
 .vscode/
 .idea/
 *.swp
+.superpowers/

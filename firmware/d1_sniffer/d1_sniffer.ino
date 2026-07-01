@@ -60,14 +60,8 @@ static BalboaFrameReader reader;
 
 // ── Decode helpers ────────────────────────────────────────────────────────────
 
-static const char* pumpStateStr(uint8_t v) {
-    switch (v) {
-        case 0: return "off";
-        case 1: return "low";
-        case 2: return "high";
-        default: return "?";
-    }
-}
+// Set false once the status-message byte offsets are pinned down (D1 done).
+static constexpr bool CALIBRATE = true;
 
 static void printHex(const uint8_t *buf, size_t len) {
     for (size_t i = 0; i < len; i++) {
@@ -93,46 +87,85 @@ static void printHex(const uint8_t *buf, size_t len) {
 // Note: exact offsets vary slightly by firmware revision. Validate against
 // your observed frames. See balboa-protocol.md for full reference.
 
+static const char* pumpStateStr(uint8_t v) {
+    switch (v) {
+        case 0: return "off";
+        case 1: return "low";
+        case 2: return "high";
+        default: return "?";
+    }
+}
+
+// Status-message payload offsets for this BP501, pinned empirically from live
+// captures (see docs/balboa-protocol.md for the raw frames).
+//
+// VERIFIED by watching the byte move with the physical state:
+//   p2  : current water temp, raw °F  (0xFF = no reading yet / no flow past
+//                                       the sensor — treat as "unknown")
+//   p10 : flag byte — bit 0x20 = heater active, bit 0x08 = light 1 (see note),
+//                     bit 0x04 = temp range (1 = high range)
+//   p11 : pumps — bits[1:0] = pump1 (0=off,1=low,2=high),
+//                 bits[3:2] = pump2 (0=off, else on; single-speed)
+//   p13 : bit 0x02 = circ pump running
+//   p20 : set temp, raw °F   (p7 mirrors it — redundant copy)
+//
+// Cross-checked against Dakoriki/ESPHome-Balboa-Spa (heater/range/circ bits).
+// NOTE: light bit is unconfirmed — our capture points to p10 bit 0x08, that
+// project uses p14==0x03. Resolve with a clean single-toggle capture.
+//
+// STILL UNKNOWN (never observed changing meaningfully):
+//   p0,p1 : NOT our clock — flip between (0,3) and (3,16) within a second
+//           (ref project reads clock at p3/p4; ours looked implausible there)
+//   p24 : counter — halved 60→30 during testing
+//   temp scale : only ever seen °F; assuming °F until a °C capture appears
+static constexpr size_t STATUS_CUR_TEMP = 2;
+static constexpr size_t STATUS_FLAGS    = 10;
+static constexpr size_t STATUS_PUMPS    = 11;
+static constexpr size_t STATUS_CIRC     = 13;
+static constexpr size_t STATUS_SET_TEMP = 20;
+
 static void decodeStatusMessage(const uint8_t *payload, size_t payloadLen) {
-    if (payloadLen < 9) {
+    if (payloadLen <= STATUS_SET_TEMP) {
         Log.println("  [status] payload too short");
         return;
     }
 
-    uint8_t hour       = payload[0];
-    uint8_t minute     = payload[1];
-    uint8_t flags      = payload[2];
-    uint8_t curTempRaw = payload[3];
-    uint8_t setTempRaw = payload[5];
-    uint8_t pumpFlags  = payload[6];
-    uint8_t miscFlags  = payload[7];
-
-    bool tempIsCelsius = (flags >> 0) & 0x01;
-    bool isHeating     = (flags >> 4) & 0x01;
-    bool isHighRange   = (flags >> 2) & 0x01;
-
-    uint8_t pump1 = (pumpFlags >> 0) & 0x03;
-    uint8_t pump2 = (pumpFlags >> 2) & 0x03;
-    bool    light = (miscFlags >> 0) & 0x01;
-    bool    circ  = (miscFlags >> 1) & 0x01;
-
-    Log.printf("  [status] %02d:%02d", hour, minute);
-    if (curTempRaw == 0xFF) {
-        Log.print("  temp=INIT");
-    } else {
-        float curTemp = tempIsCelsius ? curTempRaw / 2.0f : curTempRaw;
-        float setTemp = tempIsCelsius ? setTempRaw / 2.0f : setTempRaw;
-        Log.printf("  cur=%.1f%s  set=%.1f%s",
-            curTemp, tempIsCelsius ? "C" : "F",
-            setTemp, tempIsCelsius ? "C" : "F");
+    // Calibration aid: print every payload byte as index=dec(hex). Set the tub
+    // to a known temp/setpoint and look for those decimal values to pin offsets.
+    if (CALIBRATE) {
+        Log.printf("  [status raw] len=%zu :", payloadLen);
+        for (size_t i = 0; i < payloadLen; i++) {
+            Log.printf("  %zu=%u(0x%02X)", i, payload[i], payload[i]);
+        }
+        Log.println();
     }
-    Log.printf("  heating=%s  range=%s",
-        isHeating ? "YES" : "no",
-        isHighRange ? "high" : "low");
-    Log.printf("  pump1=%s  pump2=%s  light=%s  circ=%s",
-        pumpStateStr(pump1), pumpStateStr(pump2),
+
+    uint8_t curTempRaw = payload[STATUS_CUR_TEMP];
+    uint8_t setTempRaw = payload[STATUS_SET_TEMP];
+    uint8_t flags      = payload[STATUS_FLAGS];
+    uint8_t pumps      = payload[STATUS_PUMPS];
+
+    uint8_t pump1     = (pumps >> 0) & 0x03;
+    uint8_t pump2     = (pumps >> 2) & 0x03;
+    bool    heating   = flags & 0x20;
+    bool    light     = flags & 0x08;
+    bool    highRange = flags & 0x04;
+    bool    circ      = payload[STATUS_CIRC] & 0x02;
+
+    Log.print("  [status]");
+    if (curTempRaw == 0xFF) {
+        Log.print("  cur=--F");               // no reading right now
+    } else {
+        Log.printf("  cur=%uF", curTempRaw);   // °F assumed; scale byte TBD
+    }
+    Log.printf("  set=%uF  pump1=%s  pump2=%s  light=%s  circ=%s  heat=%s  range=%s",
+        setTempRaw,
+        pumpStateStr(pump1),
+        pump2 ? "on" : "off",
         light ? "on" : "off",
-        circ  ? "on" : "off");
+        circ  ? "on" : "off",
+        heating ? "ON" : "off",
+        highRange ? "high" : "low");
     Log.println();
 }
 
