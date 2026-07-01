@@ -26,7 +26,8 @@
 #include <ArduinoOTA.h>
 #include <TelnetStream.h>
 
-#include "secrets.h"   // OTA_PASSWORD — gitignored; copy from secrets.h.example
+#include "secrets.h"        // OTA_PASSWORD — gitignored; copy from secrets.h.example
+#include "balboa_frame.h"   // Balboa RS485 framing + CRC (host-tested in test/)
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -37,11 +38,6 @@ static constexpr int RS485_TX   = 17;
 static constexpr int RS485_RX   = 18;
 static constexpr int RS485_DE   = 21;   // Driver Enable: HIGH=transmit, LOW=receive
 static constexpr int RS485_BAUD = 115200;
-
-// Balboa frame constants
-static constexpr uint8_t MSG_START = 0xFF;
-static constexpr uint8_t MSG_END   = 0x7E;
-static constexpr size_t  MAX_FRAME = 64;
 
 // ── Log helper ────────────────────────────────────────────────────────────────
 // Forwards all output to both USB Serial and the Telnet session (if connected).
@@ -59,24 +55,8 @@ struct DualPrint : public Print {
     }
 } Log;
 
-// ── CRC ───────────────────────────────────────────────────────────────────────
-
-static uint8_t crc8(const uint8_t *data, size_t len) {
-    uint8_t crc = 0x02;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int b = 0; b < 8; b++) {
-            crc = (crc & 0x80) ? (crc << 1) ^ 0x07 : (crc << 1);
-        }
-    }
-    return crc;
-}
-
-// ── Frame buffer ──────────────────────────────────────────────────────────────
-
-static uint8_t  frameBuf[MAX_FRAME];
-static size_t   frameLen = 0;
-static bool     inFrame  = false;
+// CRC and framing live in balboa_frame.h (host-tested against captured frames).
+static BalboaFrameReader reader;
 
 // ── Decode helpers ────────────────────────────────────────────────────────────
 
@@ -158,36 +138,29 @@ static void decodeStatusMessage(const uint8_t *payload, size_t payloadLen) {
 
 // ── Frame processor ───────────────────────────────────────────────────────────
 
+// Frame layout: 7E LEN CH TYPEHI TYPELO <payload...> CRC 7E
+// Called only for CRC-valid frames (the reader rejects bad ones).
 static void processFrame(const uint8_t *frame, size_t len) {
-    // Minimum valid frame: start(1) + len(1) + type(2) + crc(1) + end(1) = 6
-    if (len < 6) return;
+    uint8_t channel = frame[2];
+    uint8_t typeHi  = frame[3];
+    uint8_t typeLo  = frame[4];
 
-    // frame[0]=0xFF  frame[1]=msgLen  frame[len-2]=crc  frame[len-1]=0x7E
-    uint8_t rxCrc   = frame[len - 2];
-    uint8_t calcCrc = crc8(frame + 1, len - 3);   // over len byte through last payload byte
-
-    bool crcOk = (rxCrc == calcCrc);
-
-    uint8_t typeHi = frame[2];
-    uint8_t typeLo = frame[3];
-
-    // Raw hex
+    // Raw hex (CRC already verified by the reader)
     Log.print("FRAME [");
     Log.print(len);
     Log.print("] ");
     printHex(frame, len);
-    Log.printf(" CRC:%s\n", crcOk ? "OK" : "FAIL");
+    Log.println(" CRC:OK");
 
-    if (!crcOk) return;
+    // Payload sits between the type bytes and the CRC.
+    const uint8_t *payload    = frame + 5;
+    size_t         payloadLen = (len >= 7) ? len - 7 : 0;   // 7E,LEN,CH,TYPE(2),CRC,7E
 
-    // Payload starts after start(1) + len(1) + type(2)
-    const uint8_t *payload    = frame + 4;
-    size_t         payloadLen = (len >= 6) ? len - 6 : 0;   // exclude start,len,type(2),crc,end
-
-    if (typeHi == 0xFF && typeLo == 0xAF) {
+    if (typeHi == 0xAF && typeLo == 0x13) {
         decodeStatusMessage(payload, payloadLen);
     } else {
-        Log.printf("  [type 0x%02X 0x%02X] payload(%zu): ", typeHi, typeLo, payloadLen);
+        Log.printf("  [chan 0x%02X  type 0x%02X 0x%02X] payload(%zu): ",
+                   channel, typeHi, typeLo, payloadLen);
         printHex(payload, payloadLen);
         Log.println();
     }
@@ -236,27 +209,8 @@ void loop() {
     ArduinoOTA.handle();
 
     while (Serial1.available()) {
-        uint8_t b = Serial1.read();
-
-        if (b == MSG_START && !inFrame) {
-            frameLen = 0;
-            inFrame  = true;
-        }
-
-        if (inFrame) {
-            if (frameLen < MAX_FRAME) {
-                frameBuf[frameLen++] = b;
-            } else {
-                Log.println("[sniffer] frame overflow, resetting");
-                inFrame  = false;
-                frameLen = 0;
-            }
-
-            if (b == MSG_END && frameLen > 2) {
-                processFrame(frameBuf, frameLen);
-                inFrame  = false;
-                frameLen = 0;
-            }
+        if (reader.push((uint8_t)Serial1.read())) {
+            processFrame(reader.buf, reader.len);
         }
     }
 }

@@ -41,8 +41,9 @@ OTA_PORT ?= 3232
 # shared with the firmware). Override with: make OTA_PASS=... flash-ota
 OTA_PASS ?= $(shell sed -n 's/.*OTA_PASSWORD[[:space:]]*"\(.*\)".*/\1/p' secrets.h 2>/dev/null)
 
-# espota.py is bundled with the ESP32 Arduino core
-ESPOTA := $(shell find ~/.arduino15/packages/esp32 -name espota.py 2>/dev/null | head -1)
+# espota.py is bundled with the ESP32 Arduino core. Data dir differs by OS
+# (~/Library/Arduino15 on macOS, ~/.arduino15 on Linux), so search both.
+ESPOTA := $(shell find ~/Library/Arduino15/packages/esp32 ~/.arduino15/packages/esp32 -name espota.py 2>/dev/null | head -1)
 
 # ─────────────────────────────────────────────────────────────────────────────
 
