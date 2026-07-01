@@ -1,7 +1,7 @@
 # Balboa RS485 Protocol Reference
 
 **Primary source:** https://github.com/ccutrer/balboa_worldwide_app/blob/main/doc/protocol.md  
-**Reference implementation:** https://github.com/MHotchin/BalBoaSpa  
+**Reference implementation:** https://github.com/MHotchin/BalBoaSpa (protocol reference only — the firmware uses its own library, see docs/PLAN.md)  
 **Alt implementation (ESP32):** https://github.com/NorthernMan54/esp32_balboa_spa
 
 ## Physical Layer
@@ -14,21 +14,22 @@
 ## Frame Format
 
 ```
-[0xFF] [LEN] [MSG_TYPE_HI] [MSG_TYPE_LO] [PAYLOAD...] [CRC] [0x7E]
+[0x7E] [LEN] [CHANNEL] [MSG_TYPE_HI] [MSG_TYPE_LO] [PAYLOAD...] [CRC] [0x7E]
 ```
 
 | Byte | Value | Description |
 |---|---|---|
-| 0 | `0xFF` | Start of message |
-| 1 | N | Length (includes type bytes and payload, excludes start/end/CRC) |
-| 2–3 | varies | Message type (2 bytes) |
-| 4..N+1 | varies | Payload |
-| N+2 | CRC | CRC8 of bytes 1..N+1 |
-| N+3 | `0x7E` | End of message |
+| 0 | `0x7E` | Start flag (same byte marks both ends; adjacent frames may share one) |
+| 1 | LEN | Bytes between the flags: the LEN byte through the CRC (= total frame size − 2) |
+| 2 | channel | `0xFF` = broadcast; the assigned client id for peripheral→spa commands |
+| 3–4 | varies | Message type (2 bytes) |
+| 5 .. | varies | Payload |
+| second-to-last | CRC | CRC8 over the LEN byte through the last payload byte (everything between the flags except the CRC) |
+| last | `0x7E` | End flag |
 
 ### CRC Algorithm
 
-CRC8, poly `0x07`, init `0x02`. See MHotchin/BalBoaSpa `crc.cpp` for reference.
+CRC8, poly `0x07`, init `0x02`, final XOR `0x02`, over the LEN byte through the last payload byte. See firmware/hottub/balboa_frame.h.
 
 ## Key Message Types
 
@@ -97,14 +98,14 @@ Once registered, all commands use type bytes `<id> BF` followed by a command dis
 Type: `<id> BF`, command byte: `0x20`  
 Payload: 1 byte — desired temp in units matching current scale (°F raw, or °C × 2)
 
-Frame: `FF 03 <id> BF 20 <tempF> CRC 7E`
+Frame: `7E 06 <id> BF 20 <tempF> CRC 7E`
 
 #### Toggle Request (pump, light, etc.)
 
 Type: `<id> BF`, command byte: `0x11`  
 Payload: 1 byte item code, followed by padding byte `0x00`
 
-Frame: `FF 04 <id> BF 11 <item> 00 CRC 7E`
+Frame: `7E 07 <id> BF 11 <item> 00 CRC 7E`
 
 | Code | Item |
 |---|---|
@@ -117,7 +118,7 @@ Frame: `FF 04 <id> BF 11 <item> 00 CRC 7E`
 
 ### Clear to Send / Bus Arbitration
 
-The spa broadcasts a "Clear to Send" (CTS) frame periodically. Peripherals must wait for CTS before transmitting to avoid collisions. The BalBoaSpa library handles this automatically.
+The spa broadcasts a "Clear to Send" (CTS) frame periodically. Peripherals must wait for CTS before transmitting to avoid collisions. Our firmware handles this in `firmware/hottub/spa_control.cpp` (`SpaProtocol`): it registers on the bus and transmits only when the spa polls its assigned channel's CTS.
 
 ## BP501-Specific Notes
 
@@ -131,5 +132,5 @@ The spa broadcasts a "Clear to Send" (CTS) frame periodically. Peripherals must 
 
 - The spa is the bus master and broadcasts status unprompted every ~300ms
 - Peripherals (including our ESP32) are secondary devices that listen and occasionally transmit
-- Always wait for CTS before sending — the BalBoaSpa library manages this
+- Always wait for CTS before sending — `SpaProtocol` only emits a queued command in response to its channel's CTS (`<id> BF 06`) poll.
 - Electrical noise from the heater contactor is common; expect occasional CRC errors, just discard and wait for the next frame

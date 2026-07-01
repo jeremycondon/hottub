@@ -51,7 +51,7 @@ Tasks:
 
 Success criteria: Can read current state and issue every control command, verified on actual hardware.
 
-**Implementation note:** D2 uses a custom Balboa protocol library (`firmware/hottub/balboa_frame.h`), not MHotchin/BalBoaSpa. Verification is performed via a Telnet command shell (`firmware/hottub/telnet_shell.h`) available at runtime behind an `arm` gate, allowing inspection and manual command testing on actual hardware.
+**Implementation note:** D2 uses a custom Balboa protocol library (`firmware/hottub/balboa_frame.h`), not MHotchin/BalBoaSpa. Verification is performed via a Telnet command shell (`firmware/hottub/hottub.ino`) available at runtime behind an `arm` gate, allowing inspection and manual command testing on actual hardware.
 
 ---
 
