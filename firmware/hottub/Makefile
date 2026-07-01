@@ -55,6 +55,7 @@ flash-monitor: flash monitor
 
 test:
 	g++ -std=c++17 -Wall -o /tmp/ht_frame test/test_balboa_frame.cpp && /tmp/ht_frame
+	g++ -std=c++17 -Wall -o /tmp/ht_bf test/test_build_frame.cpp && /tmp/ht_bf
 
 clean:
 	rm -rf build/

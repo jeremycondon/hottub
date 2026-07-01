@@ -37,6 +37,20 @@ inline bool balboa_frame_valid(const uint8_t* frame, size_t len) {
     return rxCrc == balboa_crc8(frame + 1, len - 3);
 }
 
+// Build 7E LEN <body> CRC 7E into out. body = channel + type bytes + payload.
+// Returns total frame length, or 0 if it will not fit in outCap.
+inline size_t balboa_build_frame(uint8_t* out, size_t outCap,
+                                 const uint8_t* body, size_t bodyLen) {
+    size_t total = bodyLen + 4;                 // 7E LEN <body> CRC 7E
+    if (total > outCap) return 0;
+    out[0] = BALBOA_FLAG;
+    out[1] = (uint8_t)(bodyLen + 2);            // LEN = LEN-byte + body + CRC
+    for (size_t i = 0; i < bodyLen; i++) out[2 + i] = body[i];
+    out[2 + bodyLen] = balboa_crc8(out + 1, bodyLen + 1);   // CRC over LEN..last body
+    out[3 + bodyLen] = BALBOA_FLAG;
+    return total;
+}
+
 // Streaming frame assembler. Feed it one byte at a time with push(); it returns
 // true when buf[0..len-1] holds a complete frame (validate with
 // balboa_frame_valid). Length-driven so payload bytes equal to 0x7E are safe,
