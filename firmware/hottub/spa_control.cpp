@@ -40,11 +40,44 @@ void SpaProtocol::onFrame(const uint8_t* f, size_t len, uint32_t nowMs) {
         parseStatus(payload, plen, state_, nowMs);
         return;
     }
-    // Registration handshake added in Task 5.
-    (void)payload; (void)plen;
+    if (!armed_) { owe_ = OweNone; return; }
+    if (t0 != 0xBF) return;                          // only BF arbitration frames
+    if (reg_ == Unregistered && ch == 0xFE && t1 == 0x00) {
+        reg_ = Requesting; owe_ = OweRequest; return;
+    }
+    if (reg_ == Requesting && ch == 0xFE && t1 == 0x02 && plen >= 1) {
+        channel_ = payload[0] > 0x2F ? 0x2F : payload[0];
+        reg_ = Assigned; owe_ = OweAck; return;
+    }
+    if (reg_ == Assigned && ch == channel_ && t1 == 0x06) {
+        owe_ = (qCount_ > 0) ? OweCommand : OweNothing; return;
+    }
+    owe_ = OweNone;
 }
 
 size_t SpaProtocol::pollTx(uint8_t* out, size_t cap) {
-    (void)out; (void)cap;
-    return 0;   // Task 5 implements the owed-frame responses
+    Owe o = owe_;
+    owe_ = OweNone;
+    switch (o) {
+        case OweRequest: {
+            uint8_t body[] = {0xFE, 0xBF, 0x01, 0x02, 0xF1, 0x73};
+            return balboa_build_frame(out, cap, body, sizeof body);
+        }
+        case OweAck: {
+            uint8_t body[] = {channel_, 0xBF, 0x03};
+            return balboa_build_frame(out, cap, body, sizeof body);
+        }
+        case OweNothing: {
+            uint8_t body[] = {channel_, 0xBF, 0x07};
+            return balboa_build_frame(out, cap, body, sizeof body);
+        }
+        case OweCommand: {
+            Cmd c = queue_[qHead_];
+            qHead_ = (qHead_ + 1) % QCAP;
+            qCount_--;
+            return encodeCommand(c, out, cap);
+        }
+        default:
+            return 0;
+    }
 }

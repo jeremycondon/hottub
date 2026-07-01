@@ -2,6 +2,7 @@
 #include "../balboa_frame.h"
 #include <cassert>
 #include <cstdio>
+#include <cstring>
 
 // Wrap a body in a full CRC'd frame for feeding onFrame().
 static size_t frame(uint8_t* out, const uint8_t* body, size_t n) {
@@ -24,6 +25,58 @@ int main() {
     assert(!p.hasPendingCommand());
     p.cmdSetTemp(102);
     assert(p.hasPendingCommand());
+
+    // --- Registration handshake (only when armed) ---
+    SpaProtocol q;
+    uint8_t tx[32];
+
+    // Disarmed: new-client poll produces nothing.
+    const uint8_t newclient[] = {0xFE,0xBF,0x00};
+    size_t m = frame(buf, newclient, sizeof newclient);
+    q.onFrame(buf, m, 10);
+    assert(q.pollTx(tx, sizeof tx) == 0);
+    assert(q.regState() == SpaProtocol::Unregistered);
+
+    // Arm, then handshake.
+    q.setArmed(true);
+    q.onFrame(buf, m, 20);                         // FE BF 00
+    size_t rn = q.pollTx(tx, sizeof tx);
+    const uint8_t wantReq[] = {0xFE,0xBF,0x01,0x02,0xF1,0x73};
+    uint8_t reqFrame[32]; size_t reqLen = balboa_build_frame(reqFrame, 32, wantReq, sizeof wantReq);
+    assert(rn == reqLen && memcmp(tx, reqFrame, rn) == 0);
+    assert(q.regState() == SpaProtocol::Requesting);
+
+    // Assignment -> ack, channel stored.
+    const uint8_t assign[] = {0xFE,0xBF,0x02,0x05};
+    m = frame(buf, assign, sizeof assign);
+    q.onFrame(buf, m, 30);
+    size_t an = q.pollTx(tx, sizeof tx);
+    const uint8_t wantAck[] = {0x05,0xBF,0x03};
+    uint8_t ackFrame[32]; size_t ackLen = balboa_build_frame(ackFrame, 32, wantAck, sizeof wantAck);
+    assert(an == ackLen && memcmp(tx, ackFrame, an) == 0);
+    assert(q.regState() == SpaProtocol::Assigned && q.channel() == 0x05);
+
+    // CTS with empty queue -> nothing-to-send.
+    const uint8_t cts[] = {0x05,0xBF,0x06};
+    m = frame(buf, cts, sizeof cts);
+    q.onFrame(buf, m, 40);
+    size_t nn = q.pollTx(tx, sizeof tx);
+    const uint8_t wantNts[] = {0x05,0xBF,0x07};
+    uint8_t ntsFrame[32]; size_t ntsLen = balboa_build_frame(ntsFrame, 32, wantNts, sizeof wantNts);
+    assert(nn == ntsLen && memcmp(tx, ntsFrame, nn) == 0);
+
+    // Queue a set-temp, next CTS sends it.
+    q.cmdSetTemp(102);
+    q.onFrame(buf, m, 50);
+    size_t cn = q.pollTx(tx, sizeof tx);
+    const uint8_t wantCmd[] = {0x05,0xBF,0x20,102};
+    uint8_t cmdFrame[32]; size_t cmdLen = balboa_build_frame(cmdFrame, 32, wantCmd, sizeof wantCmd);
+    assert(cn == cmdLen && memcmp(tx, cmdFrame, cn) == 0);
+    assert(!q.hasPendingCommand());
+
+    // Disarm resets registration.
+    q.setArmed(false);
+    assert(q.regState() == SpaProtocol::Unregistered && q.channel() == 0);
 
     printf("ALL TESTS PASSED\n");
     return 0;
