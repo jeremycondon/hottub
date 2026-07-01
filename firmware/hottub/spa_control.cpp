@@ -41,7 +41,7 @@ void SpaProtocol::onFrame(const uint8_t* f, size_t len, uint32_t nowMs) {
         return;
     }
     if (!armed_) { owe_ = OweNone; return; }
-    if (t0 != 0xBF) return;                          // only BF arbitration frames
+    if (t0 != 0xBF) { owe_ = OweNone; return; }      // only BF arbitration frames
     if (reg_ == Unregistered && ch == 0xFE && t1 == 0x00) {
         reg_ = Requesting; owe_ = OweRequest; return;
     }
@@ -73,9 +73,9 @@ size_t SpaProtocol::pollTx(uint8_t* out, size_t cap) {
         }
         case OweCommand: {
             Cmd c = queue_[qHead_];
-            qHead_ = (qHead_ + 1) % QCAP;
-            qCount_--;
-            return encodeCommand(c, out, cap);
+            size_t n = encodeCommand(c, out, cap);
+            if (n) { qHead_ = (qHead_ + 1) % QCAP; qCount_--; }   // dequeue only on success
+            return n;
         }
         default:
             return 0;

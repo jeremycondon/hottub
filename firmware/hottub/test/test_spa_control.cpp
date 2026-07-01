@@ -78,6 +78,35 @@ int main() {
     q.setArmed(false);
     assert(q.regState() == SpaProtocol::Unregistered && q.channel() == 0);
 
+    // --- Channel id is capped at 0x2F ---
+    SpaProtocol capP;
+    capP.setArmed(true);
+    const uint8_t nc2[] = {0xFE,0xBF,0x00};
+    m = frame(buf, nc2, sizeof nc2);
+    capP.onFrame(buf, m, 100); capP.pollTx(tx, sizeof tx);        // -> Requesting
+    const uint8_t assignHigh[] = {0xFE,0xBF,0x02,0x40};          // 0x40 > 0x2F
+    m = frame(buf, assignHigh, sizeof assignHigh);
+    capP.onFrame(buf, m, 110); capP.pollTx(tx, sizeof tx);
+    assert(capP.channel() == 0x2F);
+
+    // --- Stray assignment while Unregistered is ignored ---
+    SpaProtocol strayP;
+    strayP.setArmed(true);
+    const uint8_t assign5[] = {0xFE,0xBF,0x02,0x05};
+    m = frame(buf, assign5, sizeof assign5);
+    strayP.onFrame(buf, m, 120);
+    assert(strayP.regState() == SpaProtocol::Unregistered);
+    assert(strayP.pollTx(tx, sizeof tx) == 0);
+
+    // --- Disarm mid-handshake clears the pending owe and resets ---
+    SpaProtocol midP;
+    midP.setArmed(true);
+    m = frame(buf, nc2, sizeof nc2);
+    midP.onFrame(buf, m, 130);                                   // owe request pending, not yet polled
+    midP.setArmed(false);
+    assert(midP.regState() == SpaProtocol::Unregistered && midP.channel() == 0);
+    assert(midP.pollTx(tx, sizeof tx) == 0);                     // owe cleared -> nothing emitted
+
     printf("ALL TESTS PASSED\n");
     return 0;
 }
