@@ -107,6 +107,33 @@ int main() {
     assert(midP.regState() == SpaProtocol::Unregistered && midP.channel() == 0);
     assert(midP.pollTx(tx, sizeof tx) == 0);                     // owe cleared -> nothing emitted
 
+    // --- Non-BF frame clears a pending owe (Fix 1: onFrame owe reset) ---
+    SpaProtocol nbP;
+    nbP.setArmed(true);
+    const uint8_t nbNew[] = {0xFE,0xBF,0x00};
+    m = frame(buf, nbNew, sizeof nbNew);
+    nbP.onFrame(buf, m, 200);                  // owe=OweRequest pending, NOT polled
+    const uint8_t nonbf[] = {0x10,0x00,0x00};  // t0=0x00 != 0xBF
+    m = frame(buf, nonbf, sizeof nonbf);
+    nbP.onFrame(buf, m, 210);                  // must clear the pending owe
+    assert(nbP.pollTx(tx, sizeof tx) == 0);
+
+    // --- Encode failure leaves the command queued (Fix 2: dequeue-on-success) ---
+    SpaProtocol dqP;
+    dqP.setArmed(true);
+    m = frame(buf, nbNew, sizeof nbNew);
+    dqP.onFrame(buf, m, 300); dqP.pollTx(tx, sizeof tx);       // -> Requesting
+    const uint8_t dqAssign[] = {0xFE,0xBF,0x02,0x05};
+    m = frame(buf, dqAssign, sizeof dqAssign);
+    dqP.onFrame(buf, m, 310); dqP.pollTx(tx, sizeof tx);       // -> Assigned ch=5
+    dqP.cmdSetTemp(102);
+    const uint8_t dqCts[] = {0x05,0xBF,0x06};
+    m = frame(buf, dqCts, sizeof dqCts);
+    dqP.onFrame(buf, m, 320);                  // owe=OweCommand
+    uint8_t tiny[3];
+    assert(dqP.pollTx(tiny, sizeof tiny) == 0);   // 8-byte cmd can't fit in cap=3
+    assert(dqP.hasPendingCommand());              // command NOT dequeued on encode failure
+
     printf("ALL TESTS PASSED\n");
     return 0;
 }
