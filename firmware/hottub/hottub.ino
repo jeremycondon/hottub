@@ -10,6 +10,7 @@
 #include <WiFiManager.h>
 #include <ArduinoOTA.h>
 #include <TelnetStream.h>
+#include "HomeSpan.h"
 
 #include "secrets.h"
 #include "balboa_bus.h"
@@ -105,6 +106,14 @@ void setup() {
     ArduinoOTA.begin();
     bus.begin(RS485_RX, RS485_TX, RS485_DE, RS485_BAUD);
     bus.onRawFrame = rawFrameDump;
+    bus.proto.setArmed(true);                       // always-armed for autonomous HomeKit
+
+    homeSpan.begin(Category::Thermostats, "HotTub");
+    new SpanAccessory();
+      new Service::AccessoryInformation();
+        new Characteristic::Identify();
+        new Characteristic::Name("HotTub");
+
     Log.printf("\n=== HotTub controller (D2) ===\nWiFi %s (%s)\nRead-only until `arm`.\n",
         WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
 }
@@ -113,6 +122,7 @@ void loop() {
     ArduinoOTA.handle();
     pollTelnet();
     bus.poll(millis());
+    homeSpan.poll();
 
     // Auto-disarm after inactivity.
     if (bus.proto.armed() && millis() - armedAt > ARM_TIMEOUT_MS) {

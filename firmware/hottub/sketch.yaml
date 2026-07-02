@@ -9,5 +9,6 @@ profiles:
       - WiFiManager (2.0.17)
       - TelnetStream (1.3.0)
       - NetApiHelpers (1.0.2)
+      - HomeSpan (2.1.8)
 
 default_profile: hottub
