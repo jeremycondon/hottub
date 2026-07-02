@@ -84,21 +84,32 @@ public:
 };
 ```
 
-Per active target, on each `tick`:
+`tick(const SpaState&, SpaProtocol&, uint32_t nowMs)` is called on each fresh
+status frame. Retries are **paced by effect**, not by frame — after issuing a
+command we wait for the actuator's value to change (or a timeout) before the next
+attempt, so we never queue a second toggle before the first takes effect
+(overshoot guard). Per active target:
+
 - **reached** (actual == target) → clear target, reset counter to 0.
-- **differs, counter < MAX (3)** → issue one command toward target, counter++.
+- **waiting** (a command was issued and its effect not yet seen):
+  - actual changed since we issued → effect (or external panel change) observed;
+    stop waiting and re-evaluate on the next tick.
+  - else `nowMs - issuedMs > EFFECT_TIMEOUT_MS` (2000 ms) → assume the command was
+    lost; stop waiting (the attempt is already counted) and re-evaluate.
+  - else → still waiting; do nothing this tick.
+- **not waiting, counter < MAX (3)** → issue one command toward target, counter++,
+  mark waiting, record `issuedMs` and the actuator value at issue.
   - temp: `proto.cmdSetTemp(targetF)` (absolute re-send).
-  - pump1: one `proto.cmdTogglePump1()` — the cyclic off→low→high→off means the
-    number of toggles to reach a level is `(target - current) mod 3`, issued one
-    per tick until reached.
-  - pump2/light: one toggle if actual differs.
-- **differs, counter >= MAX** → give up: set a "gaveUp" flag for that actuator,
+  - pump1: one `proto.cmdTogglePump1()` — cyclic off→low→high→off, one toggle per
+    attempt until the level is reached (high→low legitimately takes 2).
+  - pump2/light: one toggle.
+- **not waiting, counter >= MAX** → give up: set a "gaveUp" flag for that actuator,
   clear the target. (The HomeKit layer resyncs the characteristic to actual and
   logs.)
 
-Setting a new target (new HomeKit command) resets that actuator's counter to 0
-and clears any gaveUp flag. One command per actuator per tick keeps the RS485
-queue shallow and paces to the spa's ~300 ms status cadence.
+Setting a new target (new HomeKit command) resets that actuator's counter and
+waiting state and clears its gaveUp flag. At most one command per actuator is
+in flight at a time, keeping the RS485 queue shallow.
 
 ## HomeKit service mapping (`homekit_spa`)
 
