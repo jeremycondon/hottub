@@ -1,7 +1,7 @@
 /*
  * HotTub — Balboa BP501 controller (D2).
- * Boots READ-ONLY. Transmit is enabled by the telnet `arm` command and
- * auto-disarms after ARM_TIMEOUT_MS of inactivity.
+ * Boots ARMED so HomeKit can transmit autonomously. Telnet `disarm`/`arm`
+ * remain available to stop/resume TX for manual debugging.
  *
  * Telnet (hottub.local): status | arm | disarm | temp <F> | pump1 | pump2 | light | raw
  * OTA: make ota
@@ -18,7 +18,6 @@
 static constexpr const char* OTA_HOSTNAME = "hottub";
 static constexpr int RS485_TX = 17, RS485_RX = 18, RS485_DE = 21;
 static constexpr int RS485_BAUD = 115200;
-static constexpr uint32_t ARM_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 
 struct DualPrint : public Print {
     size_t write(uint8_t c) override { Serial.write(c); TelnetStream.write(c); return 1; }
@@ -27,7 +26,6 @@ struct DualPrint : public Print {
 
 static BalboaBus bus;
 static bool     rawDump = false;
-static uint32_t armedAt = 0;
 static SpaState lastPrinted;
 static char     line[32];
 static size_t   lineLen = 0;
@@ -66,7 +64,7 @@ static bool stateChanged(const SpaState& a, const SpaState& b) {
 
 static void handleCommand(const char* cmd) {
     if (!strcmp(cmd, "status"))      { printState(); }
-    else if (!strcmp(cmd, "arm"))    { bus.proto.setArmed(true);  armedAt = millis(); Log.println("[armed] TX enabled"); }
+    else if (!strcmp(cmd, "arm"))    { bus.proto.setArmed(true);  Log.println("[armed] TX enabled"); }
     else if (!strcmp(cmd, "disarm")) { bus.proto.setArmed(false); Log.println("[disarmed] read-only"); }
     else if (!strcmp(cmd, "raw"))    { rawDump = !rawDump; Log.printf("[raw] %s\n", rawDump?"on":"off"); }
     else if (!strncmp(cmd, "temp ", 5)) {
@@ -74,12 +72,11 @@ static void handleCommand(const char* cmd) {
         int t = atoi(cmd + 5);
         if (t < 40 || t > 104) { Log.println("[err] temp out of range 40-104F"); return; }
         bus.proto.cmdSetTemp((uint8_t)t);
-        armedAt = millis();
         Log.println("[queued] set temp");
     }
-    else if (!strcmp(cmd, "pump1")) { if (bus.proto.armed()){ bus.proto.cmdTogglePump1(); armedAt=millis(); Log.println("[queued] pump1"); } else Log.println("[err] arm first"); }
-    else if (!strcmp(cmd, "pump2")) { if (bus.proto.armed()){ bus.proto.cmdTogglePump2(); armedAt=millis(); Log.println("[queued] pump2"); } else Log.println("[err] arm first"); }
-    else if (!strcmp(cmd, "light")) { if (bus.proto.armed()){ bus.proto.cmdToggleLight(); armedAt=millis(); Log.println("[queued] light"); } else Log.println("[err] arm first"); }
+    else if (!strcmp(cmd, "pump1")) { if (bus.proto.armed()){ bus.proto.cmdTogglePump1(); Log.println("[queued] pump1"); } else Log.println("[err] arm first"); }
+    else if (!strcmp(cmd, "pump2")) { if (bus.proto.armed()){ bus.proto.cmdTogglePump2(); Log.println("[queued] pump2"); } else Log.println("[err] arm first"); }
+    else if (!strcmp(cmd, "light")) { if (bus.proto.armed()){ bus.proto.cmdToggleLight(); Log.println("[queued] light"); } else Log.println("[err] arm first"); }
     else if (cmd[0]) { Log.printf("[?] unknown: %s\n", cmd); }
 }
 
@@ -114,7 +111,7 @@ void setup() {
         new Characteristic::Identify();
         new Characteristic::Name("HotTub");
 
-    Log.printf("\n=== HotTub controller (D2) ===\nWiFi %s (%s)\nRead-only until `arm`.\n",
+    Log.printf("\n=== HotTub controller (D2) ===\nWiFi %s (%s)\nArmed for HomeKit control; telnet `disarm` to stop TX.\n",
         WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
 }
 
@@ -123,12 +120,6 @@ void loop() {
     pollTelnet();
     bus.poll(millis());
     homeSpan.poll();
-
-    // Auto-disarm after inactivity.
-    if (bus.proto.armed() && millis() - armedAt > ARM_TIMEOUT_MS) {
-        bus.proto.setArmed(false);
-        Log.println("[disarmed] idle timeout");
-    }
 
     // Print state on change.
     const SpaState& s = bus.proto.state();
