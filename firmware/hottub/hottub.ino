@@ -14,6 +14,8 @@
 
 #include "secrets.h"
 #include "balboa_bus.h"
+#include "spa_reconcile.h"
+#include "homekit_spa.h"
 
 static constexpr const char* OTA_HOSTNAME = "hottub";
 static constexpr int RS485_TX = 17, RS485_RX = 18, RS485_DE = 21;
@@ -24,11 +26,14 @@ struct DualPrint : public Print {
     size_t write(const uint8_t *b, size_t n) override { Serial.write(b, n); TelnetStream.write(b, n); return n; }
 } Log;
 
-static BalboaBus bus;
-static bool     rawDump = false;
-static SpaState lastPrinted;
-static char     line[32];
-static size_t   lineLen = 0;
+static BalboaBus     bus;
+static bool          rawDump = false;
+static SpaState      lastPrinted;
+static char          line[32];
+static size_t        lineLen = 0;
+static SpaReconciler reconciler;
+static SpaHomeKit    homekit(reconciler);
+static uint32_t      lastStatusMs = 0;
 
 static void rawFrameDump(const uint8_t* f, size_t n) {
     if (!rawDump) return;
@@ -106,10 +111,7 @@ void setup() {
     bus.proto.setArmed(true);                       // always-armed for autonomous HomeKit
 
     homeSpan.begin(Category::Thermostats, "HotTub");
-    new SpanAccessory();
-      new Service::AccessoryInformation();
-        new Characteristic::Identify();
-        new Characteristic::Name("HotTub");
+    homekit.build();
 
     Log.printf("\n=== HotTub controller (D2) ===\nWiFi %s (%s)\nArmed for HomeKit control; telnet `disarm` to stop TX.\n",
         WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
@@ -121,7 +123,16 @@ void loop() {
     bus.poll(millis());
     homeSpan.poll();
 
-    // Print state on change.
     const SpaState& s = bus.proto.state();
+
+    // Print state on change.
     if (stateChanged(s, lastPrinted)) { printState(); lastPrinted = s; }
+
+    // A fresh status frame arrived: advance the reconciler and push actual
+    // state back to HomeKit characteristics.
+    if (s.lastUpdateMs != lastStatusMs) {
+        lastStatusMs = s.lastUpdateMs;
+        reconciler.tick(s, bus.proto, millis());
+        homekit.refresh(s);
+    }
 }
