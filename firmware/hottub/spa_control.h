@@ -13,6 +13,7 @@ public:
     uint8_t channel() const { return channel_; }
     const SpaState& state() const { return state_; }
     bool hasPendingCommand() const { return qCount_ > 0; }
+    size_t pendingCount() const { return qCount_; }
 
     void cmdSetTemp(uint8_t tempF);
     void cmdTogglePump1();
