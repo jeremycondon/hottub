@@ -16,7 +16,8 @@ Balboa BP501 (RS485) ──► ESP32-S3 ──► HomeKit (direct, via HomeSpan)
                               │
                               ├── OTA firmware updates
                               ├── Web config portal (hottub.local)
-                              └── iOS app (REST/WebSocket)
+                              ├── iOS app (REST/WebSocket)
+                              └── /metrics (Prometheus, optional) ──► Grafana
 ```
 
 ## Stack
@@ -28,6 +29,7 @@ Balboa BP501 (RS485) ──► ESP32-S3 ──► HomeKit (direct, via HomeSpan)
 | Balboa protocol | [MHotchin/BalBoaSpa](https://github.com/MHotchin/BalBoaSpa) (adapted) |
 | WiFi provisioning | WiFiManager (captive portal) |
 | iOS app | SwiftUI + HomeKit framework + local REST/WebSocket API |
+| Monitoring (optional) | Prometheus `/metrics` endpoint + Grafana |
 
 ## Project Structure
 
@@ -41,6 +43,7 @@ docs/
   PLAN.md           # Full implementation plan and deliverables
   hardware.md       # Board pinout, wiring, and hardware notes
   balboa-protocol.md  # BP501 RS485 protocol reference
+  monitoring.md     # Optional Prometheus/Grafana setup
 ```
 
 ## Deliverables
@@ -86,3 +89,4 @@ Port is auto-detected. Override if needed: `make PORT=/dev/cu.usbserial-XXXX fla
 
 See [docs/PLAN.md](docs/PLAN.md) for the full implementation plan.
 See [docs/hardware.md](docs/hardware.md) for wiring instructions.
+See [docs/monitoring.md](docs/monitoring.md) for optional Grafana dashboards.

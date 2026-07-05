@@ -14,6 +14,15 @@
 #include "secrets.h"
 #include "balboa_bus.h"
 
+// Optional Prometheus /metrics endpoint for Grafana dashboards (see
+// docs/monitoring.md). Set to 0 to build without it.
+#ifndef ENABLE_METRICS
+#define ENABLE_METRICS 1
+#endif
+#if ENABLE_METRICS
+#include "metrics.h"
+#endif
+
 static constexpr const char* OTA_HOSTNAME = "hottub";
 static constexpr int RS485_TX = 17, RS485_RX = 18, RS485_DE = 21;
 static constexpr int RS485_BAUD = 115200;
@@ -32,6 +41,9 @@ struct DualPrint : public Print {
 } Log;
 
 static BalboaBus bus;
+#if ENABLE_METRICS
+static MetricsServer metrics;
+#endif
 static bool     rawDump = false;
 static uint32_t armedAt = 0;
 static SpaState lastPrinted;
@@ -134,6 +146,10 @@ void setup() {
     ArduinoOTA.begin();
     bus.begin(RS485_RX, RS485_TX, RS485_DE, RS485_BAUD);
     bus.onRawFrame = rawFrameDump;
+#if ENABLE_METRICS
+    metrics.begin();
+    Log.printf("[metrics] http://%s/metrics\n", WiFi.localIP().toString().c_str());
+#endif
     Log.printf("\n=== HotTub controller (D2) ===\nWiFi %s (%s)\nRead-only until `arm`.\n",
         WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
 }
@@ -143,6 +159,10 @@ void loop() {
     pollTelnet();
     bus.poll(millis());
     pollChipTemp(millis());
+#if ENABLE_METRICS
+    metrics.update(bus.proto.state(), bus.proto.armed(), chipTempKnown, chipTempC, millis());
+    metrics.handle();
+#endif
 
     // Auto-disarm after inactivity.
     if (bus.proto.armed() && millis() - armedAt > ARM_TIMEOUT_MS) {
