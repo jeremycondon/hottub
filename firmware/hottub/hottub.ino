@@ -19,6 +19,13 @@ static constexpr int RS485_TX = 17, RS485_RX = 18, RS485_DE = 21;
 static constexpr int RS485_BAUD = 115200;
 static constexpr uint32_t ARM_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 
+// ESP32-S3 die temperature, not enclosure air temp — it runs hotter than
+// ambient (more so under WiFi TX), so these thresholds are set well above
+// normal idle readings. Hysteresis avoids warning spam right at the line.
+static constexpr float    CHIP_TEMP_WARN_C  = 70.0f;
+static constexpr float    CHIP_TEMP_CLEAR_C = 65.0f;
+static constexpr uint32_t CHIP_TEMP_POLL_MS = 10UL * 1000UL;
+
 struct DualPrint : public Print {
     size_t write(uint8_t c) override { Serial.write(c); TelnetStream.write(c); return 1; }
     size_t write(const uint8_t *b, size_t n) override { Serial.write(b, n); TelnetStream.write(b, n); return n; }
@@ -30,6 +37,11 @@ static uint32_t armedAt = 0;
 static SpaState lastPrinted;
 static char     line[32];
 static size_t   lineLen = 0;
+
+static float    chipTempC = 0;
+static bool     chipTempKnown = false;
+static bool     chipTempHot = false;
+static uint32_t lastTempPollAt = 0;
 
 static void rawFrameDump(const uint8_t* f, size_t n) {
     if (!rawDump) return;
@@ -49,11 +61,28 @@ static void printState() {
     char cur[8];
     if (s.tempKnown) snprintf(cur, sizeof cur, "%u", s.currentTempF);
     else             snprintf(cur, sizeof cur, "--");
-    Log.printf("[spa] cur=%s set=%uF pump1=%u pump2=%s light=%s circ=%s heat=%s range=%s  reg=%d ch=0x%02X armed=%d\n",
+    char chip[8];
+    if (chipTempKnown) snprintf(chip, sizeof chip, "%.1fC", chipTempC);
+    else               snprintf(chip, sizeof chip, "--");
+    Log.printf("[spa] cur=%s set=%uF pump1=%u pump2=%s light=%s circ=%s heat=%s range=%s  reg=%d ch=0x%02X armed=%d chip=%s\n",
         cur,
         s.setTempF, s.pump1, s.pump2?"on":"off", s.light?"on":"off",
         s.circ?"on":"off", s.heating?"on":"off", s.highRange?"high":"low",
-        (int)bus.proto.regState(), bus.proto.channel(), bus.proto.armed());
+        (int)bus.proto.regState(), bus.proto.channel(), bus.proto.armed(), chip);
+}
+
+static void pollChipTemp(uint32_t now) {
+    if (now - lastTempPollAt < CHIP_TEMP_POLL_MS) return;
+    lastTempPollAt = now;
+    chipTempC = temperatureRead();
+    chipTempKnown = true;
+    if (!chipTempHot && chipTempC >= CHIP_TEMP_WARN_C) {
+        chipTempHot = true;
+        Log.printf("[warn] chip temp %.1fC exceeds %.1fC — check enclosure airflow\n", chipTempC, CHIP_TEMP_WARN_C);
+    } else if (chipTempHot && chipTempC <= CHIP_TEMP_CLEAR_C) {
+        chipTempHot = false;
+        Log.printf("[ok] chip temp back to %.1fC\n", chipTempC);
+    }
 }
 
 static bool stateChanged(const SpaState& a, const SpaState& b) {
@@ -113,6 +142,7 @@ void loop() {
     ArduinoOTA.handle();
     pollTelnet();
     bus.poll(millis());
+    pollChipTemp(millis());
 
     // Auto-disarm after inactivity.
     if (bus.proto.armed() && millis() - armedAt > ARM_TIMEOUT_MS) {
