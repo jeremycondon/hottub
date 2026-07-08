@@ -35,6 +35,13 @@ static constexpr float    CHIP_TEMP_WARN_C  = 70.0f;
 static constexpr float    CHIP_TEMP_CLEAR_C = 65.0f;
 static constexpr uint32_t CHIP_TEMP_POLL_MS = 10UL * 1000UL;
 
+// The ESP32 core auto-reconnects on its own most of the time, but the WiFi
+// stack occasionally wedges after a drop and never retries. Since this
+// board is sealed in the enclosure, a stuck reconnect needs to self-heal
+// rather than wait for someone to power-cycle it.
+static constexpr uint32_t WIFI_KICK_MS    = 2UL  * 60UL * 1000UL;
+static constexpr uint32_t WIFI_RESTART_MS = 10UL * 60UL * 1000UL;
+
 struct DualPrint : public Print {
     size_t write(uint8_t c) override { Serial.write(c); TelnetStream.write(c); return 1; }
     size_t write(const uint8_t *b, size_t n) override { Serial.write(b, n); TelnetStream.write(b, n); return n; }
@@ -54,6 +61,9 @@ static float    chipTempC = 0;
 static bool     chipTempKnown = false;
 static bool     chipTempHot = false;
 static uint32_t lastTempPollAt = 0;
+
+static uint32_t wifiDownSince = 0;
+static bool     wifiKicked = false;
 
 static void rawFrameDump(const uint8_t* f, size_t n) {
     if (!rawDump) return;
@@ -94,6 +104,30 @@ static void pollChipTemp(uint32_t now) {
     } else if (chipTempHot && chipTempC <= CHIP_TEMP_CLEAR_C) {
         chipTempHot = false;
         Log.printf("[ok] chip temp back to %.1fC\n", chipTempC);
+    }
+}
+
+static void pollWifiWatchdog(uint32_t now) {
+    if (WiFi.status() == WL_CONNECTED) {
+        wifiDownSince = 0;
+        wifiKicked = false;
+        return;
+    }
+    if (wifiDownSince == 0) {
+        wifiDownSince = now;
+        Log.println("[wifi] disconnected");
+        return;
+    }
+    uint32_t downFor = now - wifiDownSince;
+    if (!wifiKicked && downFor >= WIFI_KICK_MS) {
+        wifiKicked = true;
+        Log.println("[wifi] still down after 2min, forcing reconnect");
+        WiFi.reconnect();
+    } else if (downFor >= WIFI_RESTART_MS) {
+        Log.println("[wifi] still down after 10min, restarting");
+        Serial.flush();
+        delay(100);
+        ESP.restart();
     }
 }
 
@@ -155,6 +189,7 @@ void setup() {
 }
 
 void loop() {
+    pollWifiWatchdog(millis());
     ArduinoOTA.handle();
     pollTelnet();
     bus.poll(millis());
