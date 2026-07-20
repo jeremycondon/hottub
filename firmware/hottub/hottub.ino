@@ -1,18 +1,21 @@
 /*
  * HotTub — Balboa BP501 controller (D2).
- * Boots READ-ONLY. Transmit is enabled by the telnet `arm` command and
- * auto-disarms after ARM_TIMEOUT_MS of inactivity.
+ * Boots ARMED so HomeKit can transmit autonomously. Telnet `disarm`/`arm`
+ * remain available to stop/resume TX for manual debugging.
  *
- * Telnet (hottub.local): status | arm | disarm | temp <F> | pump1 | pump2 | light | raw
+ * Telnet (hottub.local): status | version | uptime | arm | disarm | temp <F> | pump1 | pump2 | light | raw
  * OTA: make ota
  */
 #include <HardwareSerial.h>
 #include <WiFiManager.h>
 #include <ArduinoOTA.h>
 #include <TelnetStream.h>
+#include "HomeSpan.h"
 
 #include "secrets.h"
 #include "balboa_bus.h"
+#include "spa_reconcile.h"
+#include "homekit_spa.h"
 
 // Optional Prometheus /metrics endpoint for Grafana dashboards (see
 // docs/monitoring.md). Set to 0 to build without it.
@@ -24,9 +27,11 @@
 #endif
 
 static constexpr const char* OTA_HOSTNAME = "hottub";
+// Compile-time build stamp: bumps on every rebuild, so after an OTA you can
+// telnet `version` and confirm the new image is actually running.
+static constexpr const char* FW_BUILD = __DATE__ " " __TIME__;
 static constexpr int RS485_TX = 17, RS485_RX = 18, RS485_DE = 21;
 static constexpr int RS485_BAUD = 115200;
-static constexpr uint32_t ARM_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 
 // ESP32-S3 die temperature, not enclosure air temp — it runs hotter than
 // ambient (more so under WiFi TX), so these thresholds are set well above
@@ -51,11 +56,13 @@ static BalboaBus bus;
 #if ENABLE_METRICS
 static MetricsServer metrics;
 #endif
-static bool     rawDump = false;
-static uint32_t armedAt = 0;
-static SpaState lastPrinted;
-static char     line[32];
-static size_t   lineLen = 0;
+static bool          rawDump = false;
+static SpaState      lastPrinted;
+static char          line[32];
+static size_t        lineLen = 0;
+static SpaReconciler reconciler;
+static SpaHomeKit    homekit(reconciler);
+static uint32_t      lastStatusMs = 0;
 
 static float    chipTempC = 0;
 static bool     chipTempKnown = false;
@@ -76,6 +83,16 @@ static void rawFrameDump(const uint8_t* f, size_t n) {
         Log.print(f[i], HEX);
     }
     Log.println();
+}
+
+// Rollover-safe uptime: esp_timer is 64-bit microseconds since boot.
+static void formatUptime(char* out, size_t cap) {
+    uint32_t s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+    uint32_t d = s / 86400; s %= 86400;
+    uint32_t h = s / 3600;  s %= 3600;
+    uint32_t m = s / 60;    s %= 60;
+    snprintf(out, cap, "%lud %02luh %02lum %02lus",
+             (unsigned long)d, (unsigned long)h, (unsigned long)m, (unsigned long)s);
 }
 
 static void printState() {
@@ -140,7 +157,9 @@ static bool stateChanged(const SpaState& a, const SpaState& b) {
 
 static void handleCommand(const char* cmd) {
     if (!strcmp(cmd, "status"))      { printState(); }
-    else if (!strcmp(cmd, "arm"))    { bus.proto.setArmed(true);  armedAt = millis(); Log.println("[armed] TX enabled"); }
+    else if (!strcmp(cmd, "version")) { Log.printf("[fw] D3 build %s\n", FW_BUILD); }
+    else if (!strcmp(cmd, "uptime"))  { char u[32]; formatUptime(u, sizeof u); Log.printf("[uptime] %s\n", u); }
+    else if (!strcmp(cmd, "arm"))    { bus.proto.setArmed(true);  Log.println("[armed] TX enabled"); }
     else if (!strcmp(cmd, "disarm")) { bus.proto.setArmed(false); Log.println("[disarmed] read-only"); }
     else if (!strcmp(cmd, "raw"))    { rawDump = !rawDump; Log.printf("[raw] %s\n", rawDump?"on":"off"); }
     else if (!strncmp(cmd, "temp ", 5)) {
@@ -148,12 +167,11 @@ static void handleCommand(const char* cmd) {
         int t = atoi(cmd + 5);
         if (t < 40 || t > 104) { Log.println("[err] temp out of range 40-104F"); return; }
         bus.proto.cmdSetTemp((uint8_t)t);
-        armedAt = millis();
         Log.println("[queued] set temp");
     }
-    else if (!strcmp(cmd, "pump1")) { if (bus.proto.armed()){ bus.proto.cmdTogglePump1(); armedAt=millis(); Log.println("[queued] pump1"); } else Log.println("[err] arm first"); }
-    else if (!strcmp(cmd, "pump2")) { if (bus.proto.armed()){ bus.proto.cmdTogglePump2(); armedAt=millis(); Log.println("[queued] pump2"); } else Log.println("[err] arm first"); }
-    else if (!strcmp(cmd, "light")) { if (bus.proto.armed()){ bus.proto.cmdToggleLight(); armedAt=millis(); Log.println("[queued] light"); } else Log.println("[err] arm first"); }
+    else if (!strcmp(cmd, "pump1")) { if (bus.proto.armed()){ bus.proto.cmdTogglePump1(); Log.println("[queued] pump1"); } else Log.println("[err] arm first"); }
+    else if (!strcmp(cmd, "pump2")) { if (bus.proto.armed()){ bus.proto.cmdTogglePump2(); Log.println("[queued] pump2"); } else Log.println("[err] arm first"); }
+    else if (!strcmp(cmd, "light")) { if (bus.proto.armed()){ bus.proto.cmdToggleLight(); Log.println("[queued] light"); } else Log.println("[err] arm first"); }
     else if (cmd[0]) { Log.printf("[?] unknown: %s\n", cmd); }
 }
 
@@ -180,12 +198,19 @@ void setup() {
     ArduinoOTA.begin();
     bus.begin(RS485_RX, RS485_TX, RS485_DE, RS485_BAUD);
     bus.onRawFrame = rawFrameDump;
+
 #if ENABLE_METRICS
     metrics.begin();
     Log.printf("[metrics] http://%s/metrics\n", WiFi.localIP().toString().c_str());
 #endif
-    Log.printf("\n=== HotTub controller (D2) ===\nWiFi %s (%s)\nRead-only until `arm`.\n",
-        WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+
+    bus.proto.setArmed(true);                       // always-armed for autonomous HomeKit
+
+    homeSpan.begin(Category::Thermostats, "HotTub");
+    homekit.build();
+
+    Log.printf("\n=== HotTub controller (D3) build %s ===\nWiFi %s (%s)\nArmed for HomeKit control; telnet `disarm` to stop TX.\n",
+        FW_BUILD, WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
 }
 
 void loop() {
@@ -198,14 +223,18 @@ void loop() {
     metrics.update(bus.proto.state(), bus.proto.armed(), chipTempKnown, chipTempC, millis());
     metrics.handle();
 #endif
+    homeSpan.poll();
 
-    // Auto-disarm after inactivity.
-    if (bus.proto.armed() && millis() - armedAt > ARM_TIMEOUT_MS) {
-        bus.proto.setArmed(false);
-        Log.println("[disarmed] idle timeout");
-    }
+    const SpaState& s = bus.proto.state();
 
     // Print state on change.
-    const SpaState& s = bus.proto.state();
     if (stateChanged(s, lastPrinted)) { printState(); lastPrinted = s; }
+
+    // A fresh status frame arrived: advance the reconciler and push actual
+    // state back to HomeKit characteristics.
+    if (s.lastUpdateMs != lastStatusMs) {
+        lastStatusMs = s.lastUpdateMs;
+        reconciler.tick(s, bus.proto, millis());
+        homekit.refresh(s);
+    }
 }
