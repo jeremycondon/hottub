@@ -3,7 +3,7 @@
  * Boots ARMED so HomeKit can transmit autonomously. Telnet `disarm`/`arm`
  * remain available to stop/resume TX for manual debugging.
  *
- * Telnet (hottub.local): status | version | uptime | arm | disarm | temp <F> | pump1 | pump2 | light | raw
+ * Telnet (hottub.local): status | version | uptime | arm | disarm | temp <F> | pump1 | pump2 | light | raw | unpair
  * OTA: make ota
  */
 #include <HardwareSerial.h>
@@ -175,6 +175,14 @@ static void handleCommand(const char* cmd) {
     else if (!strcmp(cmd, "pump1")) { if (bus.proto.armed()){ bus.proto.cmdTogglePump1(); Log.println("[queued] pump1"); } else Log.println("[err] arm first"); }
     else if (!strcmp(cmd, "pump2")) { if (bus.proto.armed()){ bus.proto.cmdTogglePump2(); Log.println("[queued] pump2"); } else Log.println("[err] arm first"); }
     else if (!strcmp(cmd, "light")) { if (bus.proto.armed()){ bus.proto.cmdToggleLight(); Log.println("[queued] light"); } else Log.println("[err] arm first"); }
+    else if (!strcmp(cmd, "unpair")) {
+        // Delete HomeKit pairing data so the device can be re-added in the Home
+        // app (setup code 466-37-726). 'H' keeps WiFi creds — unlike 'F' — then
+        // reboots, so this stays reachable without opening the enclosure.
+        Log.println("[homekit] deleting pairing data, rebooting (setup code 466-37-726)...");
+        Serial.flush();
+        homeSpan.processSerialCommand("H");
+    }
     else if (cmd[0]) { Log.printf("[?] unknown: %s\n", cmd); }
 }
 
@@ -204,7 +212,7 @@ void setup() {
 
 #if ENABLE_METRICS
     metrics.begin();
-    Log.printf("[metrics] http://%s/metrics\n", WiFi.localIP().toString().c_str());
+    Log.printf("[metrics] http://%s:%u/metrics\n", WiFi.localIP().toString().c_str(), metrics.port());
 #endif
 
     bus.proto.setArmed(true);                       // always-armed for autonomous HomeKit
@@ -214,6 +222,9 @@ void setup() {
     // suffix) so the device stays reachable as hottub.local for OTA + telnet
     // instead of only HomeSpan's default HomeSpan-<MAC>.local.
     homeSpan.setHostNameSuffix("");
+    // Pairing setup code is HomeSpan's default 466-37-726 (not pinned via
+    // setPairingCode() on purpose: that regenerates SRP data + writes NVS every
+    // boot). Telnet `unpair` clears pairing for a re-add. See docs/monitoring.md.
     homeSpan.begin(Category::Thermostats, "HotTub", "hottub");
     homekit.build();
 

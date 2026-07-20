@@ -1,7 +1,9 @@
 # Monitoring (optional Grafana support)
 
 The main firmware (`firmware/hottub/`) exposes spa and device metrics at
-`http://hottub.local/metrics` in Prometheus text exposition format. Point a
+`http://hottub.local:9100/metrics` in Prometheus text exposition format. Port
+9100 (not 80) keeps the exporter clear of HomeSpan's HAP server, which owns
+port 80 for HomeKit. Point a
 Prometheus server at it, then use Grafana with a Prometheus data source to
 build dashboards. There's no built-in dashboard JSON to import — the metric
 names below are enough to build panels directly.
@@ -45,7 +47,7 @@ scrape_configs:
   - job_name: hottub
     scrape_interval: 30s
     static_configs:
-      - targets: ["hottub.local:80"]
+      - targets: ["hottub.local:9100"]
 ```
 
 ## Grafana
