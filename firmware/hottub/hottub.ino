@@ -3,7 +3,7 @@
  * Boots ARMED so HomeKit can transmit autonomously. Telnet `disarm`/`arm`
  * remain available to stop/resume TX for manual debugging.
  *
- * Telnet (hottub.local): status | arm | disarm | temp <F> | pump1 | pump2 | light | raw
+ * Telnet (hottub.local): status | version | uptime | arm | disarm | temp <F> | pump1 | pump2 | light | raw
  * OTA: make ota
  */
 #include <HardwareSerial.h>
@@ -18,6 +18,9 @@
 #include "homekit_spa.h"
 
 static constexpr const char* OTA_HOSTNAME = "hottub";
+// Compile-time build stamp: bumps on every rebuild, so after an OTA you can
+// telnet `version` and confirm the new image is actually running.
+static constexpr const char* FW_BUILD = __DATE__ " " __TIME__;
 static constexpr int RS485_TX = 17, RS485_RX = 18, RS485_DE = 21;
 static constexpr int RS485_BAUD = 115200;
 
@@ -48,6 +51,16 @@ static void rawFrameDump(const uint8_t* f, size_t n) {
     Log.println();
 }
 
+// Rollover-safe uptime: esp_timer is 64-bit microseconds since boot.
+static void formatUptime(char* out, size_t cap) {
+    uint32_t s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+    uint32_t d = s / 86400; s %= 86400;
+    uint32_t h = s / 3600;  s %= 3600;
+    uint32_t m = s / 60;    s %= 60;
+    snprintf(out, cap, "%lud %02luh %02lum %02lus",
+             (unsigned long)d, (unsigned long)h, (unsigned long)m, (unsigned long)s);
+}
+
 static void printState() {
     const SpaState& s = bus.proto.state();
     char cur[8];
@@ -69,6 +82,8 @@ static bool stateChanged(const SpaState& a, const SpaState& b) {
 
 static void handleCommand(const char* cmd) {
     if (!strcmp(cmd, "status"))      { printState(); }
+    else if (!strcmp(cmd, "version")) { Log.printf("[fw] D3 build %s\n", FW_BUILD); }
+    else if (!strcmp(cmd, "uptime"))  { char u[32]; formatUptime(u, sizeof u); Log.printf("[uptime] %s\n", u); }
     else if (!strcmp(cmd, "arm"))    { bus.proto.setArmed(true);  Log.println("[armed] TX enabled"); }
     else if (!strcmp(cmd, "disarm")) { bus.proto.setArmed(false); Log.println("[disarmed] read-only"); }
     else if (!strcmp(cmd, "raw"))    { rawDump = !rawDump; Log.printf("[raw] %s\n", rawDump?"on":"off"); }
@@ -113,8 +128,8 @@ void setup() {
     homeSpan.begin(Category::Thermostats, "HotTub");
     homekit.build();
 
-    Log.printf("\n=== HotTub controller (D2) ===\nWiFi %s (%s)\nArmed for HomeKit control; telnet `disarm` to stop TX.\n",
-        WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+    Log.printf("\n=== HotTub controller (D3) build %s ===\nWiFi %s (%s)\nArmed for HomeKit control; telnet `disarm` to stop TX.\n",
+        FW_BUILD, WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
 }
 
 void loop() {

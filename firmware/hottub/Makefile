@@ -42,10 +42,28 @@ flash:
 	$(ARDUINO_CLI) compile --profile $(PROFILE) .
 	$(ARDUINO_CLI) upload -p $(PORT) --profile $(PROFILE) .
 
+# The device flashes the image as one non-resumable stream, and espota aborts
+# the whole upload if any single 1024B chunk isn't ACKed within its hardcoded
+# 10s window. On the marginal RF inside the enclosure a stall is probabilistic,
+# so we just re-run the (idempotent) upload until one attempt lands. -r shows a
+# live progress bar so you can see how far each attempt gets.
+OTA_RETRIES ?= 8
+
 ota:
 	$(ARDUINO_CLI) compile --profile $(PROFILE) --output-dir build/ .
-	python3 $$(find ~/Library/Arduino15/packages/esp32 ~/.arduino15/packages/esp32 -name espota.py 2>/dev/null | head -1) \
-	  -i $(OTA_HOST) -p $(OTA_PORT) --auth=$$(sed -n 's/.*OTA_PASSWORD[[:space:]]*"\(.*\)".*/\1/p' secrets.h) -f build/*.ino.bin
+	@ESPOTA=$$(find ~/Library/Arduino15/packages/esp32 ~/.arduino15/packages/esp32 -name espota.py 2>/dev/null | head -1); \
+	AUTH=$$(sed -n 's/.*OTA_PASSWORD[[:space:]]*"\(.*\)".*/\1/p' secrets.h); \
+	BIN=$$(ls build/*.ino.bin | head -1); \
+	n=0; \
+	while [ $$n -lt $(OTA_RETRIES) ]; do \
+	  n=$$((n+1)); \
+	  printf '\n=== OTA attempt %d/%d -> %s ===\n' $$n $(OTA_RETRIES) $(OTA_HOST); \
+	  if python3 $$ESPOTA -r -i $(OTA_HOST) -p $(OTA_PORT) --auth=$$AUTH -f $$BIN; then \
+	    printf '\nOTA succeeded on attempt %d\n' $$n; exit 0; \
+	  fi; \
+	  printf 'attempt %d failed; retrying in 2s...\n' $$n; sleep 2; \
+	done; \
+	printf '\nOTA failed after %d attempts\n' $(OTA_RETRIES); exit 1
 
 monitor:
 	@test -n "$(PORT)" || { echo "\nERROR: No port detected.\n"; exit 1; }
