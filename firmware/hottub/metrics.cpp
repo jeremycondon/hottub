@@ -21,6 +21,6 @@ void MetricsServer::update(const SpaState& state, bool armed, bool chipTempKnown
 
 void MetricsServer::handleMetrics() {
     char body[2048];
-    size_t n = renderMetrics(state_, armed_, chipTempKnown_, chipTempC_, uptimeMs_, WiFi.RSSI(), body, sizeof body);
-    server_.send(200, "text/plain; version=0.0.4; charset=utf-8", body, n);
+    renderMetrics(state_, armed_, chipTempKnown_, chipTempC_, uptimeMs_, WiFi.RSSI(), body, sizeof body);
+    server_.send(200, "text/plain; version=0.0.4; charset=utf-8", body);
 }

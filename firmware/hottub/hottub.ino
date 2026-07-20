@@ -9,8 +9,9 @@
 #include <HardwareSerial.h>
 #include <WiFiManager.h>
 #include <ArduinoOTA.h>
-#include <TelnetStream.h>
 #include "HomeSpan.h"
+
+#include "net_telnet.h"
 
 #include "secrets.h"
 #include "balboa_bus.h"
@@ -47,9 +48,11 @@ static constexpr uint32_t CHIP_TEMP_POLL_MS = 10UL * 1000UL;
 static constexpr uint32_t WIFI_KICK_MS    = 2UL  * 60UL * 1000UL;
 static constexpr uint32_t WIFI_RESTART_MS = 10UL * 60UL * 1000UL;
 
+static TelnetServer telnet(23);
+
 struct DualPrint : public Print {
-    size_t write(uint8_t c) override { Serial.write(c); TelnetStream.write(c); return 1; }
-    size_t write(const uint8_t *b, size_t n) override { Serial.write(b, n); TelnetStream.write(b, n); return n; }
+    size_t write(uint8_t c) override { Serial.write(c); telnet.write(c); return 1; }
+    size_t write(const uint8_t *b, size_t n) override { Serial.write(b, n); telnet.write(b, n); return n; }
 } Log;
 
 static BalboaBus bus;
@@ -176,8 +179,8 @@ static void handleCommand(const char* cmd) {
 }
 
 static void pollTelnet() {
-    while (TelnetStream.available()) {
-        char c = TelnetStream.read();
+    while (telnet.available()) {
+        char c = telnet.read();
         if (c == '\n' || c == '\r') {
             if (lineLen) { line[lineLen] = 0; handleCommand(line); lineLen = 0; }
         } else if (lineLen < sizeof(line) - 1) {
@@ -192,7 +195,7 @@ void setup() {
     WiFi.setHostname(OTA_HOSTNAME);
     WiFiManager wm;
     wm.autoConnect("HotTub-Setup");
-    TelnetStream.begin();
+    telnet.begin();
     ArduinoOTA.setHostname(OTA_HOSTNAME);
     ArduinoOTA.setPassword(OTA_PASSWORD);
     ArduinoOTA.begin();
@@ -206,7 +209,12 @@ void setup() {
 
     bus.proto.setArmed(true);                       // always-armed for autonomous HomeKit
 
-    homeSpan.begin(Category::Thermostats, "HotTub");
+    // HomeSpan owns the ESP32's single mDNS responder, and its begin() runs
+    // after ArduinoOTA's, so its hostname wins. Pin it to "hottub" (no -MAC
+    // suffix) so the device stays reachable as hottub.local for OTA + telnet
+    // instead of only HomeSpan's default HomeSpan-<MAC>.local.
+    homeSpan.setHostNameSuffix("");
+    homeSpan.begin(Category::Thermostats, "HotTub", "hottub");
     homekit.build();
 
     Log.printf("\n=== HotTub controller (D3) build %s ===\nWiFi %s (%s)\nArmed for HomeKit control; telnet `disarm` to stop TX.\n",
@@ -216,6 +224,7 @@ void setup() {
 void loop() {
     pollWifiWatchdog(millis());
     ArduinoOTA.handle();
+    telnet.poll();
     pollTelnet();
     bus.poll(millis());
     pollChipTemp(millis());
