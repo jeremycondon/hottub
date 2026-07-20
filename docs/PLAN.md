@@ -97,6 +97,7 @@ Tasks:
   - Trigger OTA update (upload .bin)
   - Factory reset option
 - Password-protect the web portal
+- **Optional:** Prometheus `/metrics` endpoint for Grafana dashboards (see `docs/monitoring.md`); build-time toggle, no Prometheus/Grafana dependency for users who don't want it
 
 Success criteria: Can update firmware and change config from phone browser, no USB cable needed.
 

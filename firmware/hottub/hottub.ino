@@ -17,6 +17,15 @@
 #include "spa_reconcile.h"
 #include "homekit_spa.h"
 
+// Optional Prometheus /metrics endpoint for Grafana dashboards (see
+// docs/monitoring.md). Set to 0 to build without it.
+#ifndef ENABLE_METRICS
+#define ENABLE_METRICS 1
+#endif
+#if ENABLE_METRICS
+#include "metrics.h"
+#endif
+
 static constexpr const char* OTA_HOSTNAME = "hottub";
 // Compile-time build stamp: bumps on every rebuild, so after an OTA you can
 // telnet `version` and confirm the new image is actually running.
@@ -24,12 +33,29 @@ static constexpr const char* FW_BUILD = __DATE__ " " __TIME__;
 static constexpr int RS485_TX = 17, RS485_RX = 18, RS485_DE = 21;
 static constexpr int RS485_BAUD = 115200;
 
+// ESP32-S3 die temperature, not enclosure air temp — it runs hotter than
+// ambient (more so under WiFi TX), so these thresholds are set well above
+// normal idle readings. Hysteresis avoids warning spam right at the line.
+static constexpr float    CHIP_TEMP_WARN_C  = 70.0f;
+static constexpr float    CHIP_TEMP_CLEAR_C = 65.0f;
+static constexpr uint32_t CHIP_TEMP_POLL_MS = 10UL * 1000UL;
+
+// The ESP32 core auto-reconnects on its own most of the time, but the WiFi
+// stack occasionally wedges after a drop and never retries. Since this
+// board is sealed in the enclosure, a stuck reconnect needs to self-heal
+// rather than wait for someone to power-cycle it.
+static constexpr uint32_t WIFI_KICK_MS    = 2UL  * 60UL * 1000UL;
+static constexpr uint32_t WIFI_RESTART_MS = 10UL * 60UL * 1000UL;
+
 struct DualPrint : public Print {
     size_t write(uint8_t c) override { Serial.write(c); TelnetStream.write(c); return 1; }
     size_t write(const uint8_t *b, size_t n) override { Serial.write(b, n); TelnetStream.write(b, n); return n; }
 } Log;
 
-static BalboaBus     bus;
+static BalboaBus bus;
+#if ENABLE_METRICS
+static MetricsServer metrics;
+#endif
 static bool          rawDump = false;
 static SpaState      lastPrinted;
 static char          line[32];
@@ -37,6 +63,14 @@ static size_t        lineLen = 0;
 static SpaReconciler reconciler;
 static SpaHomeKit    homekit(reconciler);
 static uint32_t      lastStatusMs = 0;
+
+static float    chipTempC = 0;
+static bool     chipTempKnown = false;
+static bool     chipTempHot = false;
+static uint32_t lastTempPollAt = 0;
+
+static uint32_t wifiDownSince = 0;
+static bool     wifiKicked = false;
 
 static void rawFrameDump(const uint8_t* f, size_t n) {
     if (!rawDump) return;
@@ -66,11 +100,52 @@ static void printState() {
     char cur[8];
     if (s.tempKnown) snprintf(cur, sizeof cur, "%u", s.currentTempF);
     else             snprintf(cur, sizeof cur, "--");
-    Log.printf("[spa] cur=%s set=%uF pump1=%u pump2=%s light=%s circ=%s heat=%s range=%s  reg=%d ch=0x%02X armed=%d\n",
+    char chip[8];
+    if (chipTempKnown) snprintf(chip, sizeof chip, "%.1fC", chipTempC);
+    else               snprintf(chip, sizeof chip, "--");
+    Log.printf("[spa] cur=%s set=%uF pump1=%u pump2=%s light=%s circ=%s heat=%s range=%s  reg=%d ch=0x%02X armed=%d chip=%s\n",
         cur,
         s.setTempF, s.pump1, s.pump2?"on":"off", s.light?"on":"off",
         s.circ?"on":"off", s.heating?"on":"off", s.highRange?"high":"low",
-        (int)bus.proto.regState(), bus.proto.channel(), bus.proto.armed());
+        (int)bus.proto.regState(), bus.proto.channel(), bus.proto.armed(), chip);
+}
+
+static void pollChipTemp(uint32_t now) {
+    if (now - lastTempPollAt < CHIP_TEMP_POLL_MS) return;
+    lastTempPollAt = now;
+    chipTempC = temperatureRead();
+    chipTempKnown = true;
+    if (!chipTempHot && chipTempC >= CHIP_TEMP_WARN_C) {
+        chipTempHot = true;
+        Log.printf("[warn] chip temp %.1fC exceeds %.1fC — check enclosure airflow\n", chipTempC, CHIP_TEMP_WARN_C);
+    } else if (chipTempHot && chipTempC <= CHIP_TEMP_CLEAR_C) {
+        chipTempHot = false;
+        Log.printf("[ok] chip temp back to %.1fC\n", chipTempC);
+    }
+}
+
+static void pollWifiWatchdog(uint32_t now) {
+    if (WiFi.status() == WL_CONNECTED) {
+        wifiDownSince = 0;
+        wifiKicked = false;
+        return;
+    }
+    if (wifiDownSince == 0) {
+        wifiDownSince = now;
+        Log.println("[wifi] disconnected");
+        return;
+    }
+    uint32_t downFor = now - wifiDownSince;
+    if (!wifiKicked && downFor >= WIFI_KICK_MS) {
+        wifiKicked = true;
+        Log.println("[wifi] still down after 2min, forcing reconnect");
+        WiFi.reconnect();
+    } else if (downFor >= WIFI_RESTART_MS) {
+        Log.println("[wifi] still down after 10min, restarting");
+        Serial.flush();
+        delay(100);
+        ESP.restart();
+    }
 }
 
 static bool stateChanged(const SpaState& a, const SpaState& b) {
@@ -123,6 +198,12 @@ void setup() {
     ArduinoOTA.begin();
     bus.begin(RS485_RX, RS485_TX, RS485_DE, RS485_BAUD);
     bus.onRawFrame = rawFrameDump;
+
+#if ENABLE_METRICS
+    metrics.begin();
+    Log.printf("[metrics] http://%s/metrics\n", WiFi.localIP().toString().c_str());
+#endif
+
     bus.proto.setArmed(true);                       // always-armed for autonomous HomeKit
 
     homeSpan.begin(Category::Thermostats, "HotTub");
@@ -133,9 +214,15 @@ void setup() {
 }
 
 void loop() {
+    pollWifiWatchdog(millis());
     ArduinoOTA.handle();
     pollTelnet();
     bus.poll(millis());
+    pollChipTemp(millis());
+#if ENABLE_METRICS
+    metrics.update(bus.proto.state(), bus.proto.armed(), chipTempKnown, chipTempC, millis());
+    metrics.handle();
+#endif
     homeSpan.poll();
 
     const SpaState& s = bus.proto.state();
